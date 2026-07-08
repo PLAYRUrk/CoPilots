@@ -164,19 +164,21 @@ void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
     const RegisteredDataref* rd = reg_->getDr(drIndex);
     if (!rd || !rd->handle) return;
 
-    ParticipantId auth = session_->authorityFor(rd->zoneId);
-    if (auth != senderParticipantId && auth != INVALID_PARTICIPANT_ID) {
-        return;
-    }
+    // Never overwrite our own zones — we are the authority
+    if (session_->iOwnZone(rd->zoneId)) return;
 
-    if (senderParticipantId == session_->myId()) return;
+    // senderParticipantId == 0 means the message was relayed by the server
+    // (server already validated authority before relaying, so we trust it)
+    if (senderParticipantId != 0) {
+        ParticipantId auth = session_->authorityFor(rd->zoneId);
+        if (auth != senderParticipantId && auth != INVALID_PARTICIPANT_ID) return;
+        if (senderParticipantId == session_->myId()) return;
+    }
 
     writeDr(*rd, val);
 
-    if (drIndex < cache_.size()) {
-        cache_[drIndex].value          = val;
-        cache_[drIndex].echoSuppressed = true;
-    }
+    if (drIndex < cache_.size())
+        cache_[drIndex].value = val;
 }
 
 void SyncEngine::applyIncomingCommand(uint16_t cmdIndex, uint8_t senderParticipantId)

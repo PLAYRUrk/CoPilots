@@ -150,6 +150,9 @@ void WeatherSync::applyState(proto::MsgReader& r)
 
     if (!r.ok()) return;
 
+    // Disable real-weather mode so our values aren't immediately overridden
+    wdri("sim/weather/use_real_weather_bool", 0);
+
     wdrfa("sim/weather/wind_speed_kt",       wind_speed, 3);
     wdrfa("sim/weather/wind_direction_degt",  wind_dir,   3);
     wdrfa("sim/weather/wind_altitude_msl_m",  wind_alt,   3);

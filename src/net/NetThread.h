@@ -63,6 +63,8 @@ public:
     SafeQueue<OutboundMsg> outTcp;
     SafeQueue<UdpDatagram> inUdp;
     SafeQueue<UdpDatagram> outUdp;
+    // main thread pushes {connId, endpoint} after learning client UDP address
+    SafeQueue<std::pair<uint8_t, UdpEndpoint>> clientUdpEpUpdates;
 
     std::atomic<bool> connected  {false};
     std::atomic<bool> running    {false};

@@ -40,6 +40,7 @@ enum class UdpType : uint8_t {
     CONTROL_INPUT  = 0x02,
     PING           = 0x03,
     PONG           = 0x04,
+    ANNOUNCE       = 0x05,  // client → server: learn my UDP endpoint
 };
 
 enum class ValType : uint8_t {

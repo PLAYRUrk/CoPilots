@@ -19,6 +19,7 @@
 #include <XPLM/XPLMPlanes.h>
 
 #include <cstring>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -38,6 +39,11 @@ struct CoPilotsPlugin {
 
     cp::ui::ConnectionWindow connWin;
     cp::ui::StatusHud        statusHud;
+
+    // Maps TCP connection ID (from network thread) → participant ID (from session)
+    std::map<uint8_t, cp::ParticipantId> connIdMap_;
+    // Maps TCP connection ID → remote IP (received in 0xFD message)
+    std::map<uint8_t, std::string> connRemoteIp_;
 
     XPLMMenuID menuId    = nullptr;
     int        menuItem  = -1;
@@ -148,10 +154,28 @@ struct CoPilotsPlugin {
 
         cp::net::UdpDatagram dg;
         while (netThread.inUdp.pop(dg)) {
-            if (!dg.data.empty()) {
-                uint8_t t = dg.data[0];
-                if (t == static_cast<uint8_t>(cp::proto::UdpType::PHYSICS_STATE))
-                    physicsSync.onUdpDatagram(dg.data.data(), dg.data.size());
+            if (dg.data.empty()) continue;
+            uint8_t t = dg.data[0];
+            if (t == static_cast<uint8_t>(cp::proto::UdpType::PHYSICS_STATE)) {
+                physicsSync.onUdpDatagram(dg.data.data(), dg.data.size());
+                if (session.isHost()) {
+                    // Relay physics state from non-host physics master to all clients
+                    cp::net::UdpDatagram relay;
+                    relay.data = dg.data;
+                    // empty `to` triggers broadcast in serverLoop
+                    netThread.outUdp.push(std::move(relay));
+                }
+            } else if (t == static_cast<uint8_t>(cp::proto::UdpType::ANNOUNCE)
+                       && dg.data.size() >= 2 && session.isHost()) {
+                // Client announcing its UDP endpoint so we can send physics to it
+                uint8_t participantId = dg.data[1];
+                for (auto& [cid, pid] : connIdMap_) {
+                    if (pid == participantId) {
+                        netThread.clientUdpEpUpdates.push({cid, dg.from});
+                        Log("CoPilots: learned UDP ep for participant %u via ANNOUNCE", participantId);
+                        break;
+                    }
+                }
             }
         }
 
@@ -186,6 +210,30 @@ struct CoPilotsPlugin {
         cp::proto::MsgReader r(msg.payload.data(), msg.payload.size());
 
         switch (type) {
+        case static_cast<MT>(0xFD): {
+            // Network thread: new TCP client connected — payload is remote IP string
+            std::string ip(msg.payload.begin(), msg.payload.end());
+            connRemoteIp_[msg.sender] = ip;
+            break;
+        }
+
+        case static_cast<MT>(0xFE): {
+            // Network thread: TCP client disconnected
+            auto it = connIdMap_.find(msg.sender);
+            if (it != connIdMap_.end()) {
+                cp::ParticipantId pid = it->second;
+                session.removeParticipant(pid);
+                auto frame = cp::proto::MsgBuilder(MT::PARTICIPANT_LEAVE).u8(pid).build();
+                cp::net::OutboundMsg leaveOut;
+                leaveOut.target = 0xFF;
+                leaveOut.frame  = std::move(frame);
+                netThread.outTcp.push(std::move(leaveOut));
+                connIdMap_.erase(it);
+            }
+            connRemoteIp_.erase(msg.sender);
+            break;
+        }
+
         case MT::HELLO: {
             uint8_t ver = r.u8();
             std::string nick = r.str();
@@ -214,6 +262,9 @@ struct CoPilotsPlugin {
             netThread.outTcp.push(std::move(joinOut));
 
             broadcastAuthorityMap();
+
+            // Track connection ID → participant ID for authority translation
+            connIdMap_[msg.sender] = pid;
             break;
         }
 
@@ -239,6 +290,12 @@ struct CoPilotsPlugin {
 
             connWin.setState(cp::ui::ConnState::CONNECTED);
             Log("Joined session as participant %u", myId);
+
+            // Announce our UDP endpoint to the server so it can send us physics state
+            uint8_t ann[2] = {static_cast<uint8_t>(cp::proto::UdpType::ANNOUNCE), myId};
+            cp::net::UdpDatagram udpAnn;
+            udpAnn.data.assign(ann, ann + 2);
+            netThread.outUdp.push(std::move(udpAnn));
             break;
         }
 
@@ -291,7 +348,13 @@ struct CoPilotsPlugin {
                 }
                 default: break;
             }
-            syncEngine.applyIncoming(idx, val, msg.sender);
+            // Translate TCP connection ID → participant ID for authority check
+            uint8_t effectiveSender = msg.sender;
+            {
+                auto it = connIdMap_.find(msg.sender);
+                if (it != connIdMap_.end()) effectiveSender = it->second;
+            }
+            syncEngine.applyIncoming(idx, val, effectiveSender);
 
             if (session.isHost()) {
                 cp::net::OutboundMsg relay;
@@ -311,7 +374,12 @@ struct CoPilotsPlugin {
 
         case MT::COMMAND_FIRE: {
             uint16_t idx = r.u16();
-            syncEngine.applyIncomingCommand(idx, msg.sender);
+            {
+                uint8_t effectiveSender = msg.sender;
+                auto it = connIdMap_.find(msg.sender);
+                if (it != connIdMap_.end()) effectiveSender = it->second;
+                syncEngine.applyIncomingCommand(idx, effectiveSender);
+            }
             if (session.isHost()) {
                 cp::net::OutboundMsg relay;
                 relay.target = 0xFF;
@@ -536,6 +604,8 @@ struct CoPilotsPlugin {
         weatherSync.reset();
         registry.clear();
         config.reset();
+        connIdMap_.clear();
+        connRemoteIp_.clear();
         connWin.setState(cp::ui::ConnState::IDLE);
     }
 

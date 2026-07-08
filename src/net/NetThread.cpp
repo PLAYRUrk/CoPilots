@@ -7,6 +7,7 @@
 #ifdef _WIN32
   #define WIN32_LEAN_AND_MEAN
   #include <winsock2.h>
+  #include <ws2tcpip.h>
 #endif
 
 namespace cp {
@@ -105,8 +106,23 @@ void NetThread::serverLoop(uint16_t tcpPort, uint16_t udpPort)
                 ClientConn cc;
                 cc.id   = nextId++;
                 cc.sock = cs;
+
+                // Record remote IP so main thread can build UDP endpoint after HELLO
+                sockaddr_in peer{};
+                int plen = sizeof(peer);
+                char ipbuf[INET_ADDRSTRLEN] = "0.0.0.0";
+                if (getpeername(cs, reinterpret_cast<sockaddr*>(&peer), &plen) == 0)
+                    inet_ntop(AF_INET, &peer.sin_addr, ipbuf, sizeof(ipbuf));
+
+                Log("NetThread(server): client %u connected (ip=%s)", cc.id, ipbuf);
                 clients.push_back(std::move(cc));
-                Log("NetThread(server): client %u connected", clients.back().id);
+
+                // Notify main thread: new TCP client with remote IP
+                InboundMsg connMsg;
+                connMsg.sender = clients.back().id;
+                connMsg.type   = 0xFD;
+                connMsg.payload.assign(ipbuf, ipbuf + strlen(ipbuf));
+                inTcp.push(std::move(connMsg));
             }
         }
 
@@ -157,6 +173,21 @@ void NetThread::serverLoop(uint16_t tcpPort, uint16_t udpPort)
         for (int ri = static_cast<int>(toRemove.size())-1; ri >= 0; --ri)
             clients.erase(clients.begin() + toRemove[ri]);
 
+        // Apply any UDP endpoint updates pushed by the main thread
+        {
+            std::pair<uint8_t, UdpEndpoint> upd;
+            while (clientUdpEpUpdates.pop(upd)) {
+                for (auto& c : clients) {
+                    if (c.id == upd.first) {
+                        c.udpEp = upd.second;
+                        Log("NetThread(server): UDP ep for client %u = %s:%u",
+                            c.id, c.udpEp.ip.c_str(), c.udpEp.port);
+                        break;
+                    }
+                }
+            }
+        }
+
         OutboundMsg out;
         while (outTcp.pop(out)) {
             if (out.target == 0xFF) {
@@ -172,7 +203,15 @@ void NetThread::serverLoop(uint16_t tcpPort, uint16_t udpPort)
 
         UdpDatagram dg;
         while (outUdp.pop(dg)) {
-            UdpSendTo(udpSock, dg.data.data(), dg.data.size(), dg.to);
+            if (dg.to.ip.empty()) {
+                // Broadcast to all clients with a known UDP endpoint
+                for (auto& c : clients) {
+                    if (!c.udpEp.ip.empty())
+                        UdpSendTo(udpSock, dg.data.data(), dg.data.size(), c.udpEp);
+                }
+            } else {
+                UdpSendTo(udpSock, dg.data.data(), dg.data.size(), dg.to);
+            }
         }
 
         uint64_t now = NowMs();

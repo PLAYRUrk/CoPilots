@@ -1,6 +1,7 @@
 #include "PhysicsSync.h"
 #include "../Log.h"
 #include <XPLM/XPLMDataAccess.h>
+#include <XPLM/XPLMGraphics.h>
 #include <cstring>
 #include <cmath>
 
@@ -31,6 +32,10 @@ void PhysicsSync::reset()
     seq_      = 0;
     hasState_ = false;
     memset(&latestState_, 0, sizeof(latestState_));
+
+    // Release flight model override when disconnecting
+    XPLMDataRef ov = XPLMFindDataRef("sim/operation/override/override_planepath");
+    if (ov) { int z = 0; XPLMSetDatavi(ov, &z, 0, 1); }
 }
 
 void PhysicsSync::tick()
@@ -107,18 +112,26 @@ void PhysicsSync::onUdpDatagram(const uint8_t* data, size_t len)
 
 void PhysicsSync::applyState(const proto::PhysicsState& s)
 {
+    // Enable flight model override so X-Plane lets us drive position
+    XPLMDataRef overrideRef = XPLMFindDataRef("sim/operation/override/override_planepath");
+    if (overrideRef) { int v = 1; XPLMSetDatavi(overrideRef, &v, 0, 1); }
+
+    // lat/lon/alt datarefs are read-only without override; use local OpenGL coords instead
+    double lx, ly, lz;
+    XPLMWorldToLocal(s.lat, s.lon, s.alt, &lx, &ly, &lz);
+
     auto wdbl = [](const char* path, double val) {
         XPLMDataRef dr = XPLMFindDataRef(path);
-        if (dr && XPLMCanWriteDataRef(dr)) XPLMSetDatad(dr, val);
+        if (dr) XPLMSetDatad(dr, val);
     };
     auto wflt = [](const char* path, float val) {
         XPLMDataRef dr = XPLMFindDataRef(path);
-        if (dr && XPLMCanWriteDataRef(dr)) XPLMSetDataf(dr, val);
+        if (dr) XPLMSetDataf(dr, val);
     };
 
-    wdbl(DR_LAT,   s.lat);
-    wdbl(DR_LON,   s.lon);
-    wdbl(DR_ELEV,  s.alt);
+    wdbl("sim/flightmodel/position/local_x", lx);
+    wdbl("sim/flightmodel/position/local_y", ly);
+    wdbl("sim/flightmodel/position/local_z", lz);
     wflt(DR_PITCH, s.pitch);
     wflt(DR_ROLL,  s.roll);
     wflt(DR_HDG,   s.hdg);
