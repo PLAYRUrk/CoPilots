@@ -51,6 +51,7 @@ set(COPILOTS_SOURCES
     src/sync/SyncEngine.cpp
     src/sync/PhysicsSync.cpp
     src/sync/WeatherSync.cpp
+    src/sync/AutoDatarefSync.cpp
 
     src/session/Session.cpp
 

@@ -96,6 +96,7 @@ struct CoPilotsPlugin {
         };
         connWin.onPhysicsMasterSet = [this](cp::ParticipantId pid) {
             session.setPhysicsMaster(pid);
+            physicsSync.onMasterChanged();
             auto frame = cp::proto::MsgBuilder(cp::proto::MsgType::PHYSICS_MASTER_SET)
                          .u8(pid).build();
             cp::net::OutboundMsg out;
@@ -142,6 +143,7 @@ struct CoPilotsPlugin {
         };
         connWin.onGrantControl = [this](cp::ParticipantId pid) {
             session.setPhysicsMaster(pid);
+            physicsSync.onMasterChanged();
             auto frame = cp::proto::MsgBuilder(cp::proto::MsgType::PHYSICS_MASTER_SET)
                          .u8(pid).build();
             cp::net::OutboundMsg out;
@@ -559,6 +561,7 @@ struct CoPilotsPlugin {
             } else {
                 // Auto-approve
                 session.setPhysicsMaster(pid);
+                physicsSync.onMasterChanged();
                 auto frame = cp::proto::MsgBuilder(MT::PHYSICS_MASTER_SET).u8(pid).build();
                 cp::net::OutboundMsg out;
                 out.target = 0xFF; out.frame = std::move(frame);
@@ -578,6 +581,7 @@ struct CoPilotsPlugin {
         case MT::PHYSICS_MASTER_SET: {
             cp::ParticipantId pid = r.u8();
             session.setPhysicsMaster(pid);
+            physicsSync.onMasterChanged();
             break;
         }
 
@@ -712,6 +716,11 @@ struct CoPilotsPlugin {
         size_t sep = dir.find_last_of("/\\");
         if (sep != std::string::npos) dir = dir.substr(0, sep);
         config.load(dir);
+        {
+            char xpPath[512] = {};
+            XPLMGetSystemPath(xpPath);
+            config.applyAutoSync(xpPath);
+        }
         connWin.setData(&session, &config.get());
 
         registry.build(config.get().datarefs, config.get().commands,
@@ -768,6 +777,11 @@ struct CoPilotsPlugin {
         size_t sep = dir.find_last_of("/\\");
         if (sep != std::string::npos) dir = dir.substr(0, sep);
         config.load(dir);
+        {
+            char xpPath[512] = {};
+            XPLMGetSystemPath(xpPath);
+            config.applyAutoSync(xpPath);
+        }
 
         registry.build(config.get().datarefs, config.get().commands,
                        [this](uint16_t idx) { syncEngine.notifyCommandFired(idx); });
@@ -815,6 +829,11 @@ struct CoPilotsPlugin {
             size_t sep = dir.find_last_of("/\\");
             if (sep != std::string::npos) dir = dir.substr(0, sep);
             config.load(dir);
+            {
+                char xpPath[512] = {};
+                XPLMGetSystemPath(xpPath);
+                config.applyAutoSync(xpPath);
+            }
             registry.build(config.get().datarefs, config.get().commands,
                            [this](uint16_t idx) { syncEngine.notifyCommandFired(idx); });
             syncEngine.reset();

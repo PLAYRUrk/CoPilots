@@ -56,8 +56,9 @@ enum class ValType : uint8_t {
 
 #pragma pack(push, 1)
 struct PhysicsState {
-    uint8_t  type = static_cast<uint8_t>(UdpType::PHYSICS_STATE);
+    uint8_t  type      = static_cast<uint8_t>(UdpType::PHYSICS_STATE);
     uint32_t seq;
+    uint8_t  sender_id = 0xFF;   // participant ID of the current physics master
     double   lat, lon, alt;
     float    pitch, roll, hdg;
     float    vx, vy, vz;
@@ -65,10 +66,14 @@ struct PhysicsState {
     float    flap_ratio;
     float    gear_ratio;
     float    throttle[8];
+    float    reverser_ratio[8];  // thrust reverser deployment (0=stowed, 1=full)
     float    aileron;
     float    elevator;
     float    rudder;
     float    speedbrake;
+    float    left_brake;         // left toe brake ratio
+    float    right_brake;        // right toe brake ratio
+    float    prop_ratio[8];      // prop pitch ratio (turboprops/pistons)
 };
 static_assert(sizeof(PhysicsState) < 512, "PhysicsState too large for single UDP");
 

@@ -140,8 +140,18 @@ void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
         const auto& rd = drs[i];
         if (!rd.handle) continue;
 
-        // In SmartCopilot mode every participant sends their own changes
-        bool iOwn = smartCopilotMode_ ? true : session_->iOwnZone(rd.zoneId);
+        // Zone ownership:
+        //   _AUTO zone   → only the physics master sends (covers auto-discovered datarefs)
+        //   SmartCopilot → every participant sends their own changes
+        //   normal       → only the participant who owns the zone sends
+        bool iOwn;
+        bool isAutoZone = (rd.zoneId == AUTO_ZONE_ID);
+        if (isAutoZone)
+            iOwn = session_->isPhysicsMaster();
+        else if (smartCopilotMode_)
+            iOwn = true;
+        else
+            iOwn = session_->iOwnZone(rd.zoneId);
         if (!iOwn) continue;
         ++ownCount;
 
@@ -155,8 +165,9 @@ void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
         DrValue cur = readDr(rd);
 
         bool changed = !cur.approxEqual(c.value);
-        // In SmartCopilot mode treat all as ONCHANGE to prevent feedback loops
-        bool send    = doFull || (!smartCopilotMode_ && rd.mode == SyncMode::CONTINUOUS) || changed;
+        // CONTINUOUS mode only applies to manual-config datarefs in normal mode;
+        // _AUTO and SmartCopilot datarefs always use ONCHANGE to avoid flooding TCP.
+        bool send    = doFull || (!smartCopilotMode_ && !isAutoZone && rd.mode == SyncMode::CONTINUOUS) || changed;
 
         if (send) {
             c.value = cur;
@@ -189,15 +200,22 @@ void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
     const RegisteredDataref* rd = reg_->getDr(drIndex);
     if (!rd || !rd->handle) return;
 
-    if (smartCopilotMode_) {
-        // SmartCopilot mode: accept any change from another participant
-        // Ignore if this is our own echo (sender == myId, or sender==0 but value matches cache)
+    if (rd->zoneId == AUTO_ZONE_ID) {
+        // _AUTO zone: only accept from the current physics master.
+        // This prevents non-master clients from accidentally overriding the master's
+        // state (e.g., with stale values from before a master change).
+        if (senderParticipantId == session_->myId()) return;
+        ParticipantId pm = session_->physicsMasterId();
+        if (pm != INVALID_PARTICIPANT_ID && senderParticipantId != 0 &&
+            senderParticipantId != pm) return;
+    } else if (smartCopilotMode_) {
+        // SmartCopilot mode: accept any change from another participant.
         if (senderParticipantId != 0 && senderParticipantId == session_->myId()) return;
     } else {
-        // Zone-authority mode: only apply if we don't own the zone
+        // Zone-authority mode: only apply if we don't own the zone.
         if (session_->iOwnZone(rd->zoneId)) return;
 
-        // senderParticipantId == 0 means the message was relayed by the server
+        // senderParticipantId == 0 means the message was relayed by the server.
         if (senderParticipantId != 0) {
             ParticipantId auth = session_->authorityFor(rd->zoneId);
             if (auth != senderParticipantId && auth != INVALID_PARTICIPANT_ID) return;

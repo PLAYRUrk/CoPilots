@@ -1,10 +1,12 @@
 #include "Config.h"
 #include "SmartCopilotCompat.h"
+#include "../sync/AutoDatarefSync.h"
 #include "../Log.h"
 
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <stdexcept>
+#include <unordered_set>
 
 using json = nlohmann::json;
 
@@ -72,6 +74,33 @@ bool Config::load(const std::string& aircraftDir)
     LogWarning("Config: no copilots.json or smartcopilot.cfg found in '%s'",
                aircraftDir.c_str());
     return false;
+}
+
+void Config::applyAutoSync(const std::string& xplanePath)
+{
+    // Build deduplication set from datarefs already present in the manual config.
+    std::unordered_set<std::string> existing;
+    existing.reserve(cfg_.datarefs.size());
+    for (const auto& d : cfg_.datarefs) existing.insert(d.path);
+
+    auto extra = AutoDatarefSync::discover(xplanePath, existing);
+    if (extra.empty()) return;
+
+    cfg_.datarefs.reserve(cfg_.datarefs.size() + extra.size());
+    for (auto& e : extra) cfg_.datarefs.push_back(std::move(e));
+
+    // Recompute drListHash to include auto-discovered datarefs so that host/client
+    // version mismatches (different DataRefs.txt → different discovered set) are caught
+    // at handshake time just like a smartcopilot.cfg mismatch would be.
+    uint32_t h = 2166136261u;
+    for (const auto& dr : cfg_.datarefs) {
+        for (unsigned char c : dr.path) { h ^= c; h *= 16777619u; }
+        h ^= 0u; h *= 16777619u;
+    }
+    cfg_.drListHash = h;
+
+    Log("Config::applyAutoSync: %zu total datarefs after auto-discovery (hash=0x%08X)",
+        cfg_.datarefs.size(), cfg_.drListHash);
 }
 
 bool Config::loadJson(const std::string& path)

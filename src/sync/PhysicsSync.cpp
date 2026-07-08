@@ -2,6 +2,7 @@
 #include "../Log.h"
 #include <XPLM/XPLMDataAccess.h>
 #include <XPLM/XPLMGraphics.h>
+#include <algorithm>
 #include <cstring>
 #include <cmath>
 
@@ -44,7 +45,19 @@ void PhysicsSync::tick()
 {
     if (!session_ || !net_) return;
 
-    if (session_->isPhysicsMaster()) {
+    bool amMaster = session_->isPhysicsMaster();
+
+    if (amMaster && !wasPhysicsMaster_) {
+        // Became physics master — clear joystick/planepath overrides so hardware input is restored.
+        XPLMDataRef joyOvr = XPLMFindDataRef("sim/operation/override/override_joystick");
+        if (joyOvr) { int z = 0; XPLMSetDatai(joyOvr, z); }
+        XPLMDataRef ovPath = XPLMFindDataRef("sim/operation/override/override_planepath");
+        if (ovPath) { int z = 0; XPLMSetDatavi(ovPath, &z, 0, 1); }
+        hasState_ = false;
+    }
+    wasPhysicsMaster_ = amMaster;
+
+    if (amMaster) {
         sendState();
     } else if (hasState_) {
         applyState(latestState_);
@@ -54,8 +67,9 @@ void PhysicsSync::tick()
 void PhysicsSync::sendState()
 {
     proto::PhysicsState s{};
-    s.type = static_cast<uint8_t>(proto::UdpType::PHYSICS_STATE);
-    s.seq  = seq_++;
+    s.type      = static_cast<uint8_t>(proto::UdpType::PHYSICS_STATE);
+    s.seq       = seq_++;
+    s.sender_id = static_cast<uint8_t>(session_->myId());
 
     XPLMDataRef dr;
     auto rdbl = [&](const char* path, double& out) {
@@ -80,9 +94,20 @@ void PhysicsSync::sendState()
     rflt(DR_Q,     s.q);
     rflt(DR_R,     s.r);
 
-    XPLMDataRef thrRef = XPLMFindDataRef("sim/flightmodel/engine/ENGN_thro_use");
+    // Throttle lever position (0–1). During reverse, this is the reverse-thrust amount.
+    XPLMDataRef thrRef = XPLMFindDataRef("sim/cockpit2/engine/actuators/throttle_ratio");
     if (thrRef) XPLMGetDatavf(thrRef, s.throttle, 0, 8);
 
+    // Thrust reverser deployment (0=stowed, 1=fully deployed).
+    // Without this, clients see throttle=1 as full FORWARD power when reverser is at max.
+    XPLMDataRef revRef = XPLMFindDataRef("sim/cockpit2/engine/actuators/thrust_reverser_deploy_ratio");
+    if (revRef) XPLMGetDatavf(revRef, s.reverser_ratio, 0, 8);
+
+    // Prop pitch ratio (turboprops/pistons).
+    XPLMDataRef propRef = XPLMFindDataRef("sim/cockpit2/engine/actuators/prop_ratio");
+    if (propRef) XPLMGetDatavf(propRef, s.prop_ratio, 0, 8);
+
+    // Flight controls — read combined surface deflection (captures joystick + mouse + AP).
     XPLMDataRef ailRef  = XPLMFindDataRef("sim/flightmodel2/controls/aileron_avg");
     XPLMDataRef elvRef  = XPLMFindDataRef("sim/flightmodel2/controls/elevator_avg");
     XPLMDataRef rudRef  = XPLMFindDataRef("sim/flightmodel2/controls/rudder_avg");
@@ -94,10 +119,27 @@ void PhysicsSync::sendState()
     if (flapRef) s.flap_ratio = XPLMGetDataf(flapRef);
     if (sbRef)   s.speedbrake = XPLMGetDataf(sbRef);
 
+    // Gear animation position (deploy_ratio, first leg; handle state is synced via datarefs).
+    XPLMDataRef gearRef = XPLMFindDataRef("sim/flightmodel2/gear/deploy_ratio");
+    if (gearRef) XPLMGetDatavf(gearRef, &s.gear_ratio, 0, 1);
+
+    // Toe brakes.
+    XPLMDataRef lBrRef = XPLMFindDataRef("sim/cockpit2/controls/left_brake_ratio");
+    XPLMDataRef rBrRef = XPLMFindDataRef("sim/cockpit2/controls/right_brake_ratio");
+    if (lBrRef) s.left_brake  = XPLMGetDataf(lBrRef);
+    if (rBrRef) s.right_brake = XPLMGetDataf(rBrRef);
+
     net::UdpDatagram dg;
     dg.data.resize(sizeof(s));
     memcpy(dg.data.data(), &s, sizeof(s));
     net_->outUdp.push(std::move(dg));
+}
+
+void PhysicsSync::onMasterChanged()
+{
+    // Discard stored state so the first packet from the new master (seq may start at 0)
+    // is accepted regardless of what the previous master's last seq was.
+    hasState_ = false;
 }
 
 void PhysicsSync::onUdpDatagram(const uint8_t* data, size_t len)
@@ -107,6 +149,17 @@ void PhysicsSync::onUdpDatagram(const uint8_t* data, size_t len)
     if (session_ && session_->isPhysicsMaster()) return;
 
     const proto::PhysicsState* s = reinterpret_cast<const proto::PhysicsState*>(data);
+
+    // Reject packets from the wrong sender to prevent stale packets from the previous
+    // physics master corrupting state after a master change. Without this, onMasterChanged()
+    // resets hasState_=false, the first stale packet from the old master is accepted (setting
+    // hasState_=true with old seq), and then the new master's packets (seq starts at 0) are
+    // all rejected because 0 <= old_seq.
+    if (session_) {
+        ParticipantId expected = session_->physicsMasterId();
+        if (expected != INVALID_PARTICIPANT_ID && s->sender_id != expected) return;
+    }
+
     if (hasState_ && s->seq <= latestState_.seq) return;
     latestState_ = *s;
     hasState_    = true;
@@ -152,11 +205,34 @@ void PhysicsSync::applyState(const proto::PhysicsState& s)
     wflt("sim/joystick/yoke_pitch_ratio",   s.elevator);
     wflt("sim/joystick/yoke_heading_ratio", s.rudder);
 
+    // Throttle lever.
     XPLMDataRef thrRef = XPLMFindDataRef("sim/cockpit2/engine/actuators/throttle_ratio");
     if (thrRef) XPLMSetDatavf(thrRef, const_cast<float*>(s.throttle), 0, 8);
 
+    // Thrust reverser deployment — CRITICAL: without this, clients see throttle=1 as
+    // full forward thrust when the master has reverser at maximum.
+    XPLMDataRef revRef = XPLMFindDataRef("sim/cockpit2/engine/actuators/thrust_reverser_deploy_ratio");
+    if (revRef) XPLMSetDatavf(revRef, const_cast<float*>(s.reverser_ratio), 0, 8);
+
+    // Prop pitch ratio.
+    XPLMDataRef propRef = XPLMFindDataRef("sim/cockpit2/engine/actuators/prop_ratio");
+    if (propRef) XPLMSetDatavf(propRef, const_cast<float*>(s.prop_ratio), 0, 8);
+
     wflt("sim/cockpit2/controls/flap_handle_deploy_ratio", s.flap_ratio);
     wflt("sim/cockpit2/controls/speedbrake_ratio",         s.speedbrake);
+
+    // Gear animation position (visual smoothness; actual deployment is driven by the
+    // gear handle dataref which is synced separately via DatarefRegistry).
+    XPLMDataRef gearRef = XPLMFindDataRef("sim/flightmodel2/gear/deploy_ratio");
+    if (gearRef) {
+        float gears[10];
+        std::fill(gears, gears + 10, s.gear_ratio);
+        XPLMSetDatavf(gearRef, gears, 0, 10);
+    }
+
+    // Toe brakes.
+    wflt("sim/cockpit2/controls/left_brake_ratio",  s.left_brake);
+    wflt("sim/cockpit2/controls/right_brake_ratio", s.right_brake);
 }
 
 }

@@ -16,6 +16,9 @@ public:
 
     void onUdpDatagram(const uint8_t* data, size_t len);
 
+    // Call whenever the physics master assignment changes so seq tracking resets.
+    void onMasterChanged();
+
     void reset();
 
 private:
@@ -23,7 +26,8 @@ private:
     net::NetThread*  net_     = nullptr;
     uint32_t         seq_     = 0;
 
-    bool                  hasState_    = false;
+    bool                  hasState_         = false;
+    bool                  wasPhysicsMaster_ = false;
     proto::PhysicsState   latestState_ {};
 
     void sendState();

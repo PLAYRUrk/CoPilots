@@ -25,6 +25,10 @@ class Config {
 public:
     bool load(const std::string& aircraftDir);
 
+    // Call after load() to append auto-discovered datarefs from DataRefs.txt.
+    // xplanePath: value from XPLMGetSystemPath() — ends with a path separator.
+    void applyAutoSync(const std::string& xplanePath);
+
     const AircraftConfig& get() const { return cfg_; }
     bool                  loaded() const { return loaded_; }
 

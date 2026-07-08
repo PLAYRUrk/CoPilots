@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DatarefRegistry.h"
+#include "AutoDatarefSync.h"
 #include "../session/Session.h"
 #include "../net/Protocol.h"
 #include <vector>

@@ -252,6 +252,17 @@ void ConnectionWindow::renderHostedView()
     ImGui::Separator();
     ImGui::Spacing();
 
+    bool hostIsMaster = sess_ && (sess_->myId() == sess_->physicsMasterId());
+    if (!hostIsMaster && sess_) {
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.10f,0.55f,0.10f,1.f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f,0.75f,0.20f,1.f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.05f,0.35f,0.05f,1.f));
+        if (ImGui::Button("Take Controls", ImVec2(-1.f, 30.f)))
+            if (onPhysicsMasterSet) onPhysicsMasterSet(sess_->myId());
+        ImGui::PopStyleColor(3);
+        ImGui::Spacing();
+    }
+
     renderPendingJoins();
     renderPendingControlRequest();
     renderLobbyTable();
