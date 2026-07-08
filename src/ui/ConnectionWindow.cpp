@@ -24,7 +24,7 @@ void ConnectionWindow::setState(ConnState s, const std::string& msg)
     state_     = s;
     statusMsg_ = msg;
     if (s != ConnState::CONNECTED) {
-        isHost_ = false; localPort_ = 0; localIp_.clear();
+        isHost_ = false; localPort_ = 0; localIps_.clear();
     }
 }
 
@@ -87,10 +87,13 @@ void ConnectionWindow::renderConnectForm()
             ImGui::Spacing();
 
             bool busy = (state_ == ConnState::CONNECTING);
-            if (busy) ImGui::BeginDisabled();
-            if (ImGui::Button("Start Hosting", ImVec2(-1.f, 30.f)))
-                if (onHost) onHost(connCfg_);
-            if (busy) ImGui::EndDisabled();
+            if (busy) {
+                if (ImGui::Button("Cancel", ImVec2(-1.f, 30.f)))
+                    if (onDisconnect) onDisconnect();
+            } else {
+                if (ImGui::Button("Start Hosting", ImVec2(-1.f, 30.f)))
+                    if (onHost) onHost(connCfg_);
+            }
 
             ImGui::EndTabItem();
         }
@@ -118,13 +121,16 @@ void ConnectionWindow::renderConnectForm()
             ImGui::Spacing();
 
             bool busy = (state_ == ConnState::CONNECTING);
-            if (busy) ImGui::BeginDisabled();
-            if (ImGui::Button("Join", ImVec2(-1.f, 30.f))) {
-                std::string h; uint16_t p = 0;
-                if (parseAddr(addrBuf_, h, p)) { connCfg_.host = h; connCfg_.port = p; }
-                if (onJoin) onJoin(connCfg_);
+            if (busy) {
+                if (ImGui::Button("Cancel", ImVec2(-1.f, 30.f)))
+                    if (onDisconnect) onDisconnect();
+            } else {
+                if (ImGui::Button("Join", ImVec2(-1.f, 30.f))) {
+                    std::string h; uint16_t p = 0;
+                    if (parseAddr(addrBuf_, h, p)) { connCfg_.host = h; connCfg_.port = p; }
+                    if (onJoin) onJoin(connCfg_);
+                }
             }
-            if (busy) ImGui::EndDisabled();
 
             ImGui::EndTabItem();
         }
@@ -145,16 +151,19 @@ void ConnectionWindow::renderClientView()
 void ConnectionWindow::renderHostedView()
 {
     ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.f), "Hosting");
-    if (!localIp_.empty() && localPort_ != 0) {
+    if (!localIps_.empty() && localPort_ != 0) {
         ImGui::Spacing();
-        char ep[280];
-        snprintf(ep, sizeof(ep), "%s:%u", localIp_.c_str(), localPort_);
-        ImGui::Text("Your address:");
-        ImGui::SameLine();
-        ImGui::TextColored(ImVec4(kAccentR, kAccentG, kAccentB, 1.f), "%s", ep);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Copy")) ImGui::SetClipboardText(ep);
-        ImGui::TextDisabled("Share this with your crew.");
+        ImGui::Text("Your address(es):");
+        for (const auto& ip : localIps_) {
+            char ep[280];
+            snprintf(ep, sizeof(ep), "%s:%u", ip.c_str(), localPort_);
+            ImGui::TextColored(ImVec4(kAccentR, kAccentG, kAccentB, 1.f), "  %s", ep);
+            ImGui::SameLine();
+            ImGui::PushID(ep);
+            if (ImGui::SmallButton("Copy")) ImGui::SetClipboardText(ep);
+            ImGui::PopID();
+        }
+        ImGui::TextDisabled("Use your public (WAN) IP for internet sessions.");
     }
     if (!statusMsg_.empty()) {
         ImGui::Spacing();

@@ -200,6 +200,11 @@ int XPImguiWindow::onMouse(int x, int y, XPLMMouseStatus status)
 
     if (status == xplm_MouseDown) {
         io.AddMouseButtonEvent(0, true);
+        // Take keyboard focus immediately on any click so InputText works on first keypress
+        if (!hasKbFocus_) {
+            XPLMTakeKeyboardFocus(xpWin_);
+            hasKbFocus_ = true;
+        }
 
         float winTop = float(screenH_ - xpT_);
         bool inTitleBar = (imY >= winTop && imY < winTop + titleBarH_);

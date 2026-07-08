@@ -40,7 +40,11 @@ public:
 
     void reset();
 
+    // Force all datarefs to be sent on the next tick (used when a new client joins)
+    void requestFullSync() { fullSyncPending_ = true; }
+
 private:
+    bool fullSyncPending_ = false;
     DatarefRegistry* reg_     = nullptr;
     Session*         session_ = nullptr;
 

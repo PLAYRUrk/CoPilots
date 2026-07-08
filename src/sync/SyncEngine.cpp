@@ -119,13 +119,19 @@ void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
 {
     if (!reg_ || !session_) return;
 
+    bool doFull = fullSyncPending_;
+    fullSyncPending_ = false;
+
     const auto& drs = reg_->datarefs();
+    int sentCount = 0;
+    int ownCount  = 0;
     for (size_t i = 0; i < drs.size(); ++i) {
         const auto& rd = drs[i];
         if (!rd.handle) continue;
 
         bool iOwn = session_->iOwnZone(rd.zoneId);
         if (!iOwn) continue;
+        ++ownCount;
 
         Cache& c = cache_[i];
 
@@ -137,13 +143,19 @@ void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
         DrValue cur = readDr(rd);
 
         bool changed = !cur.approxEqual(c.value);
-        bool send    = (rd.mode == SyncMode::CONTINUOUS) || changed;
+        bool send    = doFull || (rd.mode == SyncMode::CONTINUOUS) || changed;
 
         if (send) {
             c.value = cur;
             onChanged(static_cast<uint16_t>(i), cur);
+            ++sentCount;
         }
     }
+
+    static int tickLog = 0;
+    if (++tickLog % 300 == 1)
+        Log("SyncEngine::tick own=%d sent=%d/%zu full=%d",
+            ownCount, sentCount, drs.size(), (int)doFull);
 
     const auto& cmds = reg_->commands();
     if (cmdPending_.size() != cmds.size())
@@ -174,6 +186,11 @@ void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
         if (auth != senderParticipantId && auth != INVALID_PARTICIPANT_ID) return;
         if (senderParticipantId == session_->myId()) return;
     }
+
+    static int applyLog = 0;
+    if (++applyLog <= 10 || applyLog % 600 == 0)
+        Log("SyncEngine::applyIncoming idx=%u zone=%s writable=%d sender=%u",
+            drIndex, rd->zoneId.c_str(), (int)rd->writable, senderParticipantId);
 
     writeDr(*rd, val);
 

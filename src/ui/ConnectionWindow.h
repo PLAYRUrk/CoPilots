@@ -39,8 +39,8 @@ public:
     void setVisible(bool v) { xpwSetVisible(v); }
     bool visible()    const { return xpwVisible(); }
 
-    void setLocalEndpoint(const std::string& ip, uint16_t port)
-    { localIp_ = ip; localPort_ = port; }
+    void setLocalEndpoint(const std::vector<std::string>& ips, uint16_t port)
+    { localIps_ = ips; localPort_ = port; }
     void setIsHost(bool h) { isHost_ = h; }
 
     void setData(const Session* s, const AircraftConfig* c) { sess_ = s; aircraftCfg_ = c; }
@@ -51,9 +51,9 @@ protected:
 private:
     ConnState   state_     = ConnState::IDLE;
     std::string statusMsg_;
-    bool        isHost_    = false;
-    std::string localIp_;
-    uint16_t    localPort_ = 0;
+    bool                     isHost_    = false;
+    std::vector<std::string> localIps_;
+    uint16_t                 localPort_ = 0;
     ConnectionConfig connCfg_;
 
     const Session*        sess_       = nullptr;

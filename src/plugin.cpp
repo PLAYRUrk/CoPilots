@@ -240,7 +240,6 @@ struct CoPilotsPlugin {
             (void)ver;
             cp::ParticipantId pid = session.addParticipant(nick);
 
-            auto authMap = session.buildAuthorityMap();
             auto wb = cp::proto::MsgBuilder(MT::WELCOME).u8(pid);
             wb.u16(static_cast<uint16_t>(session.participants().size()));
             for (const auto& p : session.participants()) {
@@ -265,6 +264,9 @@ struct CoPilotsPlugin {
 
             // Track connection ID → participant ID for authority translation
             connIdMap_[msg.sender] = pid;
+
+            // Send full cockpit state dump to the new client on next tick
+            syncEngine.requestFullSync();
             break;
         }
 
@@ -304,6 +306,15 @@ struct CoPilotsPlugin {
             std::string nick = r.str();
             (void)pid;
             session.addParticipant(nick);
+            break;
+        }
+
+        case MT::PARTICIPANT_UPDATE: {
+            cp::ParticipantId pid = r.u8();
+            std::string roleId = r.str();
+            // Server notifying us of a role change — apply on client (host already applied locally)
+            if (!session.isHost())
+                session.setRole(pid, roleId, config.get().roles);
             break;
         }
 
@@ -484,6 +495,16 @@ struct CoPilotsPlugin {
         out.target = 0xFF;
         out.frame  = b.build();
         netThread.outTcp.push(std::move(out));
+
+        // Also tell clients about each participant's current role (so their UI stays in sync)
+        for (const auto& p : session.participants()) {
+            auto pf = cp::proto::MsgBuilder(cp::proto::MsgType::PARTICIPANT_UPDATE)
+                      .u8(p.id).str(p.roleId).build();
+            cp::net::OutboundMsg pout;
+            pout.target = 0xFF;
+            pout.frame  = std::move(pf);
+            netThread.outTcp.push(std::move(pout));
+        }
     }
 
     void sendDatarefSet(uint16_t idx, const cp::DrValue& val)
@@ -543,27 +564,34 @@ struct CoPilotsPlugin {
 
         netThread.startServer(cfg.port, cfg.port);
 
-        std::string localIp = "127.0.0.1";
+        std::vector<std::string> allIps;
         {
             char hostname[256] = {};
             if (gethostname(hostname, sizeof(hostname)) == 0) {
                 addrinfo hints{}, *res = nullptr;
                 hints.ai_family   = AF_INET;
                 hints.ai_socktype = SOCK_STREAM;
-                if (getaddrinfo(hostname, nullptr, &hints, &res) == 0 && res) {
-                    char ipbuf[INET_ADDRSTRLEN] = "127.0.0.1";
-                    inet_ntop(AF_INET,
-                              &reinterpret_cast<sockaddr_in*>(res->ai_addr)->sin_addr,
-                              ipbuf, sizeof(ipbuf));
-                    localIp = ipbuf;
+                if (getaddrinfo(hostname, nullptr, &hints, &res) == 0) {
+                    for (auto* ai = res; ai != nullptr; ai = ai->ai_next) {
+                        char ipbuf[INET_ADDRSTRLEN] = {};
+                        inet_ntop(AF_INET,
+                                  &reinterpret_cast<sockaddr_in*>(ai->ai_addr)->sin_addr,
+                                  ipbuf, sizeof(ipbuf));
+                        if (strcmp(ipbuf, "127.0.0.1") != 0 && ipbuf[0] != '\0') {
+                            bool dup = false;
+                            for (const auto& ex : allIps) if (ex == ipbuf) { dup = true; break; }
+                            if (!dup) allIps.push_back(ipbuf);
+                        }
+                    }
                     freeaddrinfo(res);
                 }
             }
         }
+        if (allIps.empty()) allIps.push_back("127.0.0.1");
         connWin.setIsHost(true);
-        connWin.setLocalEndpoint(localIp, cfg.port);
+        connWin.setLocalEndpoint(allIps, cfg.port);
         connWin.setState(cp::ui::ConnState::CONNECTED);
-        Log("Hosting on port %u  (local IP: %s)", cfg.port, localIp.c_str());
+        Log("Hosting on port %u  (IPs: %zu found)", cfg.port, allIps.size());
     }
 
     void onJoin(const cp::ui::ConnectionConfig& cfg)
