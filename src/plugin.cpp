@@ -304,8 +304,9 @@ struct CoPilotsPlugin {
         case MT::PARTICIPANT_JOIN: {
             cp::ParticipantId pid = r.u8();
             std::string nick = r.str();
-            (void)pid;
-            session.addParticipant(nick);
+            // Skip if we already know this participant (received in WELCOME)
+            if (!session.find(pid))
+                session.addParticipant(nick);
             break;
         }
 
@@ -555,6 +556,7 @@ struct CoPilotsPlugin {
 
         registry.build(config.get().datarefs, config.get().commands);
         syncEngine.init(&registry, &session);
+        syncEngine.setSmartCopilotMode(config.get().fromSmartCopilot);
         physicsSync.init(&session, &netThread);
         weatherSync.init(&session, &netThread);
 
@@ -608,6 +610,7 @@ struct CoPilotsPlugin {
 
         registry.build(config.get().datarefs, config.get().commands);
         syncEngine.init(&registry, &session);
+        syncEngine.setSmartCopilotMode(config.get().fromSmartCopilot);
         physicsSync.init(&session, &netThread);
         weatherSync.init(&session, &netThread);
 

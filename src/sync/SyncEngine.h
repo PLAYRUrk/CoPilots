@@ -43,8 +43,13 @@ public:
     // Force all datarefs to be sent on the next tick (used when a new client joins)
     void requestFullSync() { fullSyncPending_ = true; }
 
+    // In SmartCopilot mode every participant sends their own changes and accepts
+    // changes from others (no single authority per zone, echo suppression only)
+    void setSmartCopilotMode(bool v) { smartCopilotMode_ = v; }
+
 private:
-    bool fullSyncPending_ = false;
+    bool fullSyncPending_   = false;
+    bool smartCopilotMode_  = false;
     DatarefRegistry* reg_     = nullptr;
     Session*         session_ = nullptr;
 

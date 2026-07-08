@@ -113,6 +113,17 @@ void SyncEngine::writeDr(const RegisteredDataref& rd, const DrValue& val)
             break;
         default: break;
     }
+
+    // Verify the write was accepted (log first few failures to diagnose read-only datarefs)
+    static int writeVerifyLog = 0;
+    if (writeVerifyLog < 20) {
+        DrValue after = readDr(rd);
+        if (!after.approxEqual(val)) {
+            ++writeVerifyLog;
+            Log("SyncEngine::writeDr VERIFY FAILED path=%s type=%d",
+                rd.path.c_str(), (int)rd.type);
+        }
+    }
 }
 
 void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
@@ -129,7 +140,8 @@ void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
         const auto& rd = drs[i];
         if (!rd.handle) continue;
 
-        bool iOwn = session_->iOwnZone(rd.zoneId);
+        // In SmartCopilot mode every participant sends their own changes
+        bool iOwn = smartCopilotMode_ ? true : session_->iOwnZone(rd.zoneId);
         if (!iOwn) continue;
         ++ownCount;
 
@@ -143,7 +155,8 @@ void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
         DrValue cur = readDr(rd);
 
         bool changed = !cur.approxEqual(c.value);
-        bool send    = doFull || (rd.mode == SyncMode::CONTINUOUS) || changed;
+        // In SmartCopilot mode treat all as ONCHANGE to prevent feedback loops
+        bool send    = doFull || (!smartCopilotMode_ && rd.mode == SyncMode::CONTINUOUS) || changed;
 
         if (send) {
             c.value = cur;
@@ -176,15 +189,20 @@ void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
     const RegisteredDataref* rd = reg_->getDr(drIndex);
     if (!rd || !rd->handle) return;
 
-    // Never overwrite our own zones — we are the authority
-    if (session_->iOwnZone(rd->zoneId)) return;
+    if (smartCopilotMode_) {
+        // SmartCopilot mode: accept any change from another participant
+        // Ignore if this is our own echo (sender == myId, or sender==0 but value matches cache)
+        if (senderParticipantId != 0 && senderParticipantId == session_->myId()) return;
+    } else {
+        // Zone-authority mode: only apply if we don't own the zone
+        if (session_->iOwnZone(rd->zoneId)) return;
 
-    // senderParticipantId == 0 means the message was relayed by the server
-    // (server already validated authority before relaying, so we trust it)
-    if (senderParticipantId != 0) {
-        ParticipantId auth = session_->authorityFor(rd->zoneId);
-        if (auth != senderParticipantId && auth != INVALID_PARTICIPANT_ID) return;
-        if (senderParticipantId == session_->myId()) return;
+        // senderParticipantId == 0 means the message was relayed by the server
+        if (senderParticipantId != 0) {
+            ParticipantId auth = session_->authorityFor(rd->zoneId);
+            if (auth != senderParticipantId && auth != INVALID_PARTICIPANT_ID) return;
+            if (senderParticipantId == session_->myId()) return;
+        }
     }
 
     static int applyLog = 0;
@@ -194,8 +212,11 @@ void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
 
     writeDr(*rd, val);
 
-    if (drIndex < cache_.size())
+    if (drIndex < cache_.size()) {
         cache_[drIndex].value = val;
+        // Suppress echo for 1 tick so we don't send this value back to the sender
+        cache_[drIndex].echoSuppressed = true;
+    }
 }
 
 void SyncEngine::applyIncomingCommand(uint16_t cmdIndex, uint8_t senderParticipantId)

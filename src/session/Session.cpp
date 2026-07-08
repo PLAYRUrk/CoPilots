@@ -119,6 +119,7 @@ ParticipantId Session::authorityFor(const std::string& zoneId) const
 
 bool Session::iOwnZone(const std::string& zoneId) const
 {
+    if (myId_ == INVALID_PARTICIPANT_ID) return false;
     return authorityFor(zoneId) == myId_;
 }
 
