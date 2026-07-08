@@ -93,8 +93,16 @@ bool SmartCopilotCompat::parse(const std::string& filePath, AircraftConfig& out)
         }
     }
 
-    Log("SmartCopilotCompat: parsed %zu datarefs, %zu commands from '%s'",
-        out.datarefs.size(), out.commands.size(), filePath.c_str());
+    // FNV-1a hash of the ordered dataref path list; used to detect version mismatches at handshake
+    uint32_t h = 2166136261u;
+    for (const auto& dr : out.datarefs) {
+        for (unsigned char c : dr.path) { h ^= c; h *= 16777619u; }
+        h ^= 0u; h *= 16777619u; // path separator
+    }
+    out.drListHash = h;
+
+    Log("SmartCopilotCompat: parsed %zu datarefs, %zu commands from '%s' (hash=0x%08X)",
+        out.datarefs.size(), out.commands.size(), filePath.c_str(), out.drListHash);
     return !out.datarefs.empty() || !out.commands.empty();
 }
 

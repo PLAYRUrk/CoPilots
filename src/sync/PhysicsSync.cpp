@@ -33,9 +33,11 @@ void PhysicsSync::reset()
     hasState_ = false;
     memset(&latestState_, 0, sizeof(latestState_));
 
-    // Release flight model override when disconnecting
     XPLMDataRef ov = XPLMFindDataRef("sim/operation/override/override_planepath");
     if (ov) { int z = 0; XPLMSetDatavi(ov, &z, 0, 1); }
+
+    XPLMDataRef joyOvr = XPLMFindDataRef("sim/operation/override/override_joystick");
+    if (joyOvr) { int z = 0; XPLMSetDatai(joyOvr, z); }
 }
 
 void PhysicsSync::tick()
@@ -141,6 +143,20 @@ void PhysicsSync::applyState(const proto::PhysicsState& s)
     wflt(DR_P,     s.p);
     wflt(DR_Q,     s.q);
     wflt(DR_R,     s.r);
+
+    // Override local joystick so incoming control values from physics master take effect
+    XPLMDataRef joyOvr = XPLMFindDataRef("sim/operation/override/override_joystick");
+    if (joyOvr) { int v = 1; XPLMSetDatai(joyOvr, v); }
+
+    wflt("sim/joystick/yoke_roll_ratio",    s.aileron);
+    wflt("sim/joystick/yoke_pitch_ratio",   s.elevator);
+    wflt("sim/joystick/yoke_heading_ratio", s.rudder);
+
+    XPLMDataRef thrRef = XPLMFindDataRef("sim/cockpit2/engine/actuators/throttle_ratio");
+    if (thrRef) XPLMSetDatavf(thrRef, const_cast<float*>(s.throttle), 0, 8);
+
+    wflt("sim/cockpit2/controls/flap_handle_deploy_ratio", s.flap_ratio);
+    wflt("sim/cockpit2/controls/speedbrake_ratio",         s.speedbrake);
 }
 
 }

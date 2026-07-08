@@ -11,10 +11,13 @@ namespace cp {
 namespace ui {
 
 struct ConnectionConfig {
-    std::string nick   = "Pilot";
-    std::string host   = "127.0.0.1";
-    uint16_t    port   = 56900;
-    bool        asHost = true;
+    std::string nick     = "Pilot";
+    std::string host     = "127.0.0.1";
+    uint16_t    port     = 56900;
+    bool        asHost   = true;
+    std::string password = "";
+    bool        requireJoinApproval    = true;
+    bool        requireControlApproval = true;
 };
 
 enum class ConnState { IDLE, CONNECTING, CONNECTED, CONNECT_ERROR };
@@ -32,6 +35,14 @@ public:
     std::function<void(ParticipantId)>                                  onPhysicsMasterSet;
     std::function<void(ParticipantId)>                                  onWeatherMasterSet;
 
+    // Pending join approval (host only)
+    std::function<void(uint8_t connId)>                    onAcceptJoin;
+    std::function<void(uint8_t connId)>                    onRejectJoin;
+    // Control transfer
+    std::function<void()>                                  onRequestControl;
+    std::function<void(ParticipantId)>                     onGrantControl;
+    std::function<void(ParticipantId)>                     onDenyControl;
+
     bool init();
     void shutdown() { xpwShutdown(); }
 
@@ -44,6 +55,18 @@ public:
     void setIsHost(bool h) { isHost_ = h; }
 
     void setData(const Session* s, const AircraftConfig* c) { sess_ = s; aircraftCfg_ = c; }
+
+    // Pending join queue (host only)
+    struct PendingJoin { uint8_t connId; std::string nick; };
+    void addPendingJoin(uint8_t connId, const std::string& nick);
+    void removePendingJoin(uint8_t connId);
+
+    // Control transfer request (host only)
+    void setPendingControlRequest(ParticipantId pid, const std::string& nick);
+    void clearPendingControlRequest();
+    // Show a transient notification on client side
+    void showControlDenied(const std::string& reason)
+    { controlDeniedMsg_ = reason; controlDeniedTimer_ = 5.f; }
 
 protected:
     void renderContent() override;
@@ -59,14 +82,29 @@ private:
     const Session*        sess_       = nullptr;
     const AircraftConfig* aircraftCfg_ = nullptr;
 
-    char nickBuf_[64]  = "Pilot";
-    char portBuf_[8]   = "56900";
-    char addrBuf_[272] = "127.0.0.1:56900";
+    char nickBuf_[64]   = "Pilot";
+    char portBuf_[8]    = "56900";
+    char addrBuf_[272]  = "127.0.0.1:56900";
+    char passBuf_[64]   = "";
+
+    // Pending joins (host)
+    std::vector<PendingJoin> pendingJoins_;
+
+    // Pending control request (host)
+    bool          hasPendingControl_   = false;
+    ParticipantId pendingControlPid_   = 0;
+    std::string   pendingControlNick_;
+
+    // Control denied notification (client)
+    std::string controlDeniedMsg_;
+    float       controlDeniedTimer_ = 0.f;
 
     void renderConnectForm();
     void renderHostedView();
     void renderClientView();
     void renderLobbyTable();
+    void renderPendingJoins();
+    void renderPendingControlRequest();
 };
 
 }

@@ -24,6 +24,8 @@ enum class MsgType : uint8_t {
     KICK               = 0x22,
     PHYSICS_MASTER_SET = 0x23,
     WEATHER_MASTER_SET = 0x24,
+    CONTROL_REQUEST    = 0x25,  // client → host: request to become physics master
+    CONTROL_DENY       = 0x26,  // host → client: control request denied
 
     AUTHORITY_MAP      = 0x30,
 

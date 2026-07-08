@@ -25,7 +25,35 @@ void ConnectionWindow::setState(ConnState s, const std::string& msg)
     statusMsg_ = msg;
     if (s != ConnState::CONNECTED) {
         isHost_ = false; localPort_ = 0; localIps_.clear();
+        pendingJoins_.clear();
+        hasPendingControl_ = false;
     }
+}
+
+void ConnectionWindow::addPendingJoin(uint8_t connId, const std::string& nick)
+{
+    for (const auto& p : pendingJoins_) if (p.connId == connId) return;
+    pendingJoins_.push_back({connId, nick});
+}
+
+void ConnectionWindow::removePendingJoin(uint8_t connId)
+{
+    pendingJoins_.erase(
+        std::remove_if(pendingJoins_.begin(), pendingJoins_.end(),
+                       [connId](const PendingJoin& p){ return p.connId == connId; }),
+        pendingJoins_.end());
+}
+
+void ConnectionWindow::setPendingControlRequest(ParticipantId pid, const std::string& nick)
+{
+    hasPendingControl_ = true;
+    pendingControlPid_ = pid;
+    pendingControlNick_ = nick;
+}
+
+void ConnectionWindow::clearPendingControlRequest()
+{
+    hasPendingControl_ = false;
 }
 
 static bool parseAddr(const char* buf, std::string& outHost, uint16_t& outPort)
@@ -61,6 +89,17 @@ void ConnectionWindow::renderContent()
     xpwEndWindow();
 }
 
+static void renderDrHashLine(const AircraftConfig* cfg)
+{
+    if (!cfg || cfg->drListHash == 0) return;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "DR list: %zu datarefs  [0x%08X]",
+             cfg->datarefs.size(), cfg->drListHash);
+    ImGui::TextDisabled("%s", buf);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Copy##hash")) ImGui::SetClipboardText(buf);
+}
+
 void ConnectionWindow::renderConnectForm()
 {
     if (ImGui::BeginTabBar("##mode")) {
@@ -79,6 +118,19 @@ void ConnectionWindow::renderConnectForm()
                                  ImGuiInputTextFlags_CharsDecimal))
                 connCfg_.port = static_cast<uint16_t>(std::atoi(portBuf_));
 
+            ImGui::Spacing();
+            ImGui::Text("Lobby Password (optional)");
+            ImGui::SetNextItemWidth(200.f);
+            if (ImGui::InputText("##pass_host", passBuf_, sizeof(passBuf_),
+                                 ImGuiInputTextFlags_Password))
+                connCfg_.password = passBuf_;
+
+            ImGui::Spacing();
+            ImGui::Checkbox("Require join approval", &connCfg_.requireJoinApproval);
+            ImGui::Checkbox("Require control transfer approval", &connCfg_.requireControlApproval);
+
+            ImGui::Spacing();
+            renderDrHashLine(aircraftCfg_);
             ImGui::Spacing();
             if (state_ == ConnState::CONNECT_ERROR)
                 ImGui::TextColored(ImVec4(0.95f,0.3f,0.3f,1.f), "Error: %s", statusMsg_.c_str());
@@ -114,6 +166,15 @@ void ConnectionWindow::renderConnectForm()
             }
 
             ImGui::Spacing();
+            ImGui::Text("Password (if required)");
+            ImGui::SetNextItemWidth(200.f);
+            if (ImGui::InputText("##pass_join", passBuf_, sizeof(passBuf_),
+                                 ImGuiInputTextFlags_Password))
+                connCfg_.password = passBuf_;
+
+            ImGui::Spacing();
+            renderDrHashLine(aircraftCfg_);
+            ImGui::Spacing();
             if (state_ == ConnState::CONNECT_ERROR)
                 ImGui::TextColored(ImVec4(0.95f,0.3f,0.3f,1.f), "Error: %s", statusMsg_.c_str());
             else if (state_ == ConnState::CONNECTING)
@@ -144,6 +205,24 @@ void ConnectionWindow::renderClientView()
     if (!statusMsg_.empty()) ImGui::TextDisabled("%s", statusMsg_.c_str());
     ImGui::Spacing();
 
+    // Control denied notification
+    if (controlDeniedTimer_ > 0.f) {
+        controlDeniedTimer_ -= ImGui::GetIO().DeltaTime;
+        ImGui::TextColored(ImVec4(0.95f,0.4f,0.4f,1.f),
+                           "Controls denied: %s", controlDeniedMsg_.c_str());
+        ImGui::Spacing();
+    }
+
+    bool isPhysMaster = sess_ && (sess_->myId() == sess_->physicsMasterId());
+    if (!isPhysMaster) {
+        if (ImGui::Button("Request Controls", ImVec2(-1.f, 28.f)))
+            if (onRequestControl) onRequestControl();
+        ImGui::Spacing();
+    } else {
+        ImGui::TextColored(ImVec4(kAccentR,kAccentG,kAccentB,1.f), "You have controls");
+        ImGui::Spacing();
+    }
+
     if (ImGui::Button("Disconnect", ImVec2(-1.f, 30.f)))
         if (onDisconnect) onDisconnect();
 }
@@ -173,6 +252,8 @@ void ConnectionWindow::renderHostedView()
     ImGui::Separator();
     ImGui::Spacing();
 
+    renderPendingJoins();
+    renderPendingControlRequest();
     renderLobbyTable();
 
     ImGui::Spacing();
@@ -189,6 +270,60 @@ void ConnectionWindow::renderHostedView()
     ImGui::PopStyleColor(3);
 }
 
+void ConnectionWindow::renderPendingJoins()
+{
+    if (pendingJoins_.empty()) return;
+    ImGui::TextColored(ImVec4(1.f,0.8f,0.2f,1.f), "Pending connections:");
+    for (auto it = pendingJoins_.begin(); it != pendingJoins_.end(); ) {
+        ImGui::PushID(it->connId);
+        ImGui::Text("  %s", it->nick.c_str());
+        ImGui::SameLine();
+        bool accepted = false, rejected = false;
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.1f,0.6f,0.1f,1.f));
+        if (ImGui::SmallButton("Accept")) accepted = true;
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f,0.1f,0.1f,1.f));
+        if (ImGui::SmallButton("Reject")) rejected = true;
+        ImGui::PopStyleColor();
+        ImGui::PopID();
+        if (accepted) {
+            if (onAcceptJoin) onAcceptJoin(it->connId);
+            it = pendingJoins_.erase(it);
+        } else if (rejected) {
+            if (onRejectJoin) onRejectJoin(it->connId);
+            it = pendingJoins_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    ImGui::Separator();
+    ImGui::Spacing();
+}
+
+void ConnectionWindow::renderPendingControlRequest()
+{
+    if (!hasPendingControl_) return;
+    ImGui::TextColored(ImVec4(1.f,0.8f,0.2f,1.f),
+                       "  \"%s\" requests aircraft controls", pendingControlNick_.c_str());
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.1f,0.6f,0.1f,1.f));
+    if (ImGui::SmallButton("Grant")) {
+        if (onGrantControl) onGrantControl(pendingControlPid_);
+        hasPendingControl_ = false;
+    }
+    ImGui::PopStyleColor();
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f,0.1f,0.1f,1.f));
+    if (ImGui::SmallButton("Deny")) {
+        if (onDenyControl) onDenyControl(pendingControlPid_);
+        hasPendingControl_ = false;
+    }
+    ImGui::PopStyleColor();
+    ImGui::Separator();
+    ImGui::Spacing();
+}
+
 void ConnectionWindow::renderLobbyTable()
 {
     if (!sess_ || !aircraftCfg_) {
@@ -200,9 +335,11 @@ void ConnectionWindow::renderLobbyTable()
     ImGui::TextColored(ImVec4(kAccentR, kAccentG, kAccentB, 1.f),
                        "Crew: %d", count);
 
-    if (aircraftCfg_->fromSmartCopilot)
+    if (aircraftCfg_->fromSmartCopilot) {
         ImGui::TextColored(ImVec4(1.f,0.7f,0.1f,1.f),
                            "smartcopilot.cfg -- zone/role features unavailable.");
+        renderDrHashLine(aircraftCfg_);
+    }
     ImGui::Spacing();
 
     if (ImGui::BeginTable("##pilots", 5,

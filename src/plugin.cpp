@@ -45,6 +45,14 @@ struct CoPilotsPlugin {
     // Maps TCP connection ID → remote IP (received in 0xFD message)
     std::map<uint8_t, std::string> connRemoteIp_;
 
+    // Lobby settings (set when hosting begins)
+    std::string lobbyPassword_;
+    bool        requireJoinApproval_    = true;
+    bool        requireControlApproval_ = true;
+
+    struct PendingConn { uint8_t connId; std::string nick; uint32_t drHash; };
+    std::vector<PendingConn> pendingConns_;
+
     XPLMMenuID menuId    = nullptr;
     int        menuItem  = -1;
 
@@ -103,6 +111,56 @@ struct CoPilotsPlugin {
             out.target = 0xFF;
             out.frame  = std::move(frame);
             netThread.outTcp.push(std::move(out));
+        };
+
+        connWin.onAcceptJoin = [this](uint8_t connId) {
+            auto it = std::find_if(pendingConns_.begin(), pendingConns_.end(),
+                                   [connId](const PendingConn& p){ return p.connId == connId; });
+            if (it != pendingConns_.end()) {
+                acceptJoin(it->connId, it->nick);
+                pendingConns_.erase(it);
+            }
+        };
+        connWin.onRejectJoin = [this](uint8_t connId) {
+            auto rf = cp::proto::MsgBuilder(cp::proto::MsgType::REJECT)
+                      .str("Connection rejected by host.").build();
+            cp::net::OutboundMsg ro;
+            ro.target = connId;
+            ro.frame  = std::move(rf);
+            netThread.outTcp.push(std::move(ro));
+            pendingConns_.erase(
+                std::remove_if(pendingConns_.begin(), pendingConns_.end(),
+                               [connId](const PendingConn& p){ return p.connId == connId; }),
+                pendingConns_.end());
+        };
+        connWin.onRequestControl = [this]() {
+            auto frame = cp::proto::MsgBuilder(cp::proto::MsgType::CONTROL_REQUEST).build();
+            cp::net::OutboundMsg out;
+            out.target = 0;
+            out.frame  = std::move(frame);
+            netThread.outTcp.push(std::move(out));
+        };
+        connWin.onGrantControl = [this](cp::ParticipantId pid) {
+            session.setPhysicsMaster(pid);
+            auto frame = cp::proto::MsgBuilder(cp::proto::MsgType::PHYSICS_MASTER_SET)
+                         .u8(pid).build();
+            cp::net::OutboundMsg out;
+            out.target = 0xFF;
+            out.frame  = std::move(frame);
+            netThread.outTcp.push(std::move(out));
+        };
+        connWin.onDenyControl = [this](cp::ParticipantId pid) {
+            for (const auto& [cid, ppid] : connIdMap_) {
+                if (ppid == pid) {
+                    auto frame = cp::proto::MsgBuilder(cp::proto::MsgType::CONTROL_DENY)
+                                 .str("Control request denied by host.").build();
+                    cp::net::OutboundMsg out;
+                    out.target = cid;
+                    out.frame  = std::move(frame);
+                    netThread.outTcp.push(std::move(out));
+                    break;
+                }
+            }
         };
 
         connWin.init();
@@ -203,6 +261,36 @@ struct CoPilotsPlugin {
         }
     }
 
+    void acceptJoin(uint8_t connId, const std::string& nick)
+    {
+        using MT = cp::proto::MsgType;
+        cp::ParticipantId pid = session.addParticipant(nick);
+
+        auto wb = cp::proto::MsgBuilder(MT::WELCOME).u8(pid);
+        wb.u16(static_cast<uint16_t>(session.participants().size()));
+        for (const auto& p : session.participants()) {
+            wb.u8(p.id).str(p.nick).str(p.roleId);
+            wb.u8(static_cast<uint8_t>(p.zoneIds.size()));
+            for (const auto& z : p.zoneIds) wb.str(z);
+        }
+        wb.u8(session.physicsMasterId());
+        cp::net::OutboundMsg welcomeOut;
+        welcomeOut.target = connId;
+        welcomeOut.frame  = wb.build();
+        netThread.outTcp.push(std::move(welcomeOut));
+
+        auto jb = cp::proto::MsgBuilder(MT::PARTICIPANT_JOIN).u8(pid).str(nick);
+        cp::net::OutboundMsg joinOut;
+        joinOut.target = 0xFF;
+        joinOut.frame  = jb.build();
+        netThread.outTcp.push(std::move(joinOut));
+
+        broadcastAuthorityMap();
+        connIdMap_[connId] = pid;
+        syncEngine.requestFullSync();
+        Log("CoPilots: accepted join from '%s' as participant %u", nick.c_str(), pid);
+    }
+
     void handleTcpMessage(const cp::net::InboundMsg& msg)
     {
         using MT = cp::proto::MsgType;
@@ -218,7 +306,14 @@ struct CoPilotsPlugin {
         }
 
         case static_cast<MT>(0xFE): {
-            // Network thread: TCP client disconnected
+            if (msg.sender == 0) {
+                // Client side: the host closed the connection
+                Log("CoPilots: host disconnected");
+                onDisconnect();
+                connWin.setState(cp::ui::ConnState::CONNECT_ERROR, "Host disconnected.");
+                break;
+            }
+            // Server side: a client disconnected
             auto it = connIdMap_.find(msg.sender);
             if (it != connIdMap_.end()) {
                 cp::ParticipantId pid = it->second;
@@ -230,43 +325,58 @@ struct CoPilotsPlugin {
                 netThread.outTcp.push(std::move(leaveOut));
                 connIdMap_.erase(it);
             }
+            // Also clean up pending joins (client disconnected before being accepted)
+            pendingConns_.erase(
+                std::remove_if(pendingConns_.begin(), pendingConns_.end(),
+                               [&](const PendingConn& p){ return p.connId == msg.sender; }),
+                pendingConns_.end());
+            connWin.removePendingJoin(msg.sender);
             connRemoteIp_.erase(msg.sender);
             break;
         }
 
         case MT::HELLO: {
             uint8_t ver = r.u8();
-            std::string nick = r.str();
+            std::string nick      = r.str();
+            uint32_t clientDrHash = r.empty() ? 0 : r.u32();
+            std::string clientPwd = r.empty() ? "" : r.str();
             (void)ver;
-            cp::ParticipantId pid = session.addParticipant(nick);
 
-            auto wb = cp::proto::MsgBuilder(MT::WELCOME).u8(pid);
-            wb.u16(static_cast<uint16_t>(session.participants().size()));
-            for (const auto& p : session.participants()) {
-                wb.u8(p.id).str(p.nick).str(p.roleId);
-                wb.u8(static_cast<uint8_t>(p.zoneIds.size()));
-                for (const auto& z : p.zoneIds) wb.str(z);
+            // Check lobby password
+            if (!lobbyPassword_.empty() && clientPwd != lobbyPassword_) {
+                auto rf = cp::proto::MsgBuilder(MT::REJECT)
+                          .str("Wrong password.").build();
+                cp::net::OutboundMsg ro;
+                ro.target = msg.sender; ro.frame = std::move(rf);
+                netThread.outTcp.push(std::move(ro));
+                Log("CoPilots: rejected '%s' — wrong password", nick.c_str());
+                break;
             }
-            wb.u8(session.physicsMasterId());
-            cp::net::OutboundMsg welcomeOut;
-            welcomeOut.target = msg.sender;
-            welcomeOut.frame  = wb.build();
-            netThread.outTcp.push(std::move(welcomeOut));
 
-            auto jb = cp::proto::MsgBuilder(MT::PARTICIPANT_JOIN)
-                      .u8(pid).str(nick);
-            cp::net::OutboundMsg joinOut;
-            joinOut.target = 0xFF;
-            joinOut.frame  = jb.build();
-            netThread.outTcp.push(std::move(joinOut));
+            // Check dataref list hash
+            if (clientDrHash != 0 && clientDrHash != config.get().drListHash) {
+                char buf[128];
+                snprintf(buf, sizeof(buf),
+                         "smartcopilot.cfg mismatch: client=0x%08X host=0x%08X — "
+                         "ensure both sides use the same aircraft version.",
+                         clientDrHash, config.get().drListHash);
+                auto rf = cp::proto::MsgBuilder(MT::REJECT).str(std::string(buf)).build();
+                cp::net::OutboundMsg ro;
+                ro.target = msg.sender; ro.frame = std::move(rf);
+                netThread.outTcp.push(std::move(ro));
+                Log("CoPilots: rejected '%s' — dr hash mismatch client=0x%08X host=0x%08X",
+                    nick.c_str(), clientDrHash, config.get().drListHash);
+                break;
+            }
 
-            broadcastAuthorityMap();
-
-            // Track connection ID → participant ID for authority translation
-            connIdMap_[msg.sender] = pid;
-
-            // Send full cockpit state dump to the new client on next tick
-            syncEngine.requestFullSync();
+            // Queue for host approval or accept immediately
+            if (requireJoinApproval_) {
+                pendingConns_.push_back({msg.sender, nick, clientDrHash});
+                connWin.addPendingJoin(msg.sender, nick);
+                Log("CoPilots: queued join request from '%s' (connId=%u)", nick.c_str(), msg.sender);
+            } else {
+                acceptJoin(msg.sender, nick);
+            }
             break;
         }
 
@@ -436,6 +546,35 @@ struct CoPilotsPlugin {
             break;
         }
 
+        case MT::CONTROL_REQUEST: {
+            if (!session.isHost()) break;
+            auto it = connIdMap_.find(msg.sender);
+            if (it == connIdMap_.end()) break;
+            cp::ParticipantId pid = it->second;
+            const cp::Participant* p = session.find(pid);
+            if (!p) break;
+            if (requireControlApproval_) {
+                connWin.setPendingControlRequest(pid, p->nick);
+                Log("CoPilots: control request from '%s' (pid=%u)", p->nick.c_str(), pid);
+            } else {
+                // Auto-approve
+                session.setPhysicsMaster(pid);
+                auto frame = cp::proto::MsgBuilder(MT::PHYSICS_MASTER_SET).u8(pid).build();
+                cp::net::OutboundMsg out;
+                out.target = 0xFF; out.frame = std::move(frame);
+                netThread.outTcp.push(std::move(out));
+                Log("CoPilots: auto-granted controls to '%s'", p->nick.c_str());
+            }
+            break;
+        }
+
+        case MT::CONTROL_DENY: {
+            std::string reason = r.str();
+            connWin.showControlDenied(reason);
+            Log("CoPilots: controls denied — %s", reason.c_str());
+            break;
+        }
+
         case MT::PHYSICS_MASTER_SET: {
             cp::ParticipantId pid = r.u8();
             session.setPhysicsMaster(pid);
@@ -479,6 +618,14 @@ struct CoPilotsPlugin {
                 onDisconnect();
                 connWin.setState(cp::ui::ConnState::CONNECT_ERROR, "You were kicked from the session.");
             }
+            break;
+        }
+
+        case MT::REJECT: {
+            std::string reason = r.str();
+            Log("CoPilots: connection rejected by host: %s", reason.c_str());
+            onDisconnect();
+            connWin.setState(cp::ui::ConnState::CONNECT_ERROR, "Rejected: " + reason);
             break;
         }
 
@@ -555,6 +702,9 @@ struct CoPilotsPlugin {
     {
         onDisconnect();
         connWin.setState(cp::ui::ConnState::CONNECTING);
+        lobbyPassword_          = cfg.password;
+        requireJoinApproval_    = cfg.requireJoinApproval;
+        requireControlApproval_ = cfg.requireControlApproval;
 
         char aircraftPath[512]; char aircraftFile[256];
         XPLMGetNthAircraftModel(0, aircraftFile, aircraftPath);
@@ -630,7 +780,9 @@ struct CoPilotsPlugin {
 
         auto frame = cp::proto::MsgBuilder(cp::proto::MsgType::HELLO)
                      .u8(cp::proto::PROTOCOL_VERSION)
-                     .str(cfg.nick).build();
+                     .str(cfg.nick)
+                     .u32(config.get().drListHash)
+                     .str(cfg.password).build();
         cp::net::OutboundMsg out;
         out.target = 0;
         out.frame  = std::move(frame);
@@ -649,6 +801,8 @@ struct CoPilotsPlugin {
         config.reset();
         connIdMap_.clear();
         connRemoteIp_.clear();
+        pendingConns_.clear();
+        lobbyPassword_.clear();
         connWin.setState(cp::ui::ConnState::IDLE);
     }
 

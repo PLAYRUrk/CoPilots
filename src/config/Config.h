@@ -10,6 +10,7 @@ struct AircraftConfig {
     std::string             name;
     uint16_t                port      = 56900;
     bool                    fromSmartCopilot = false;
+    uint32_t                drListHash = 0; // FNV-1a over ordered dataref paths
 
     std::vector<Zone>        zones;
     std::vector<Role>        roles;
