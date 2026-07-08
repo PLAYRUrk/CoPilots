@@ -1,0 +1,12 @@
+build/
+.vs/
+*.xpl
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.obj
+third_party/SDK/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake

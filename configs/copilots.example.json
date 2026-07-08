@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "aircraft": "Default Boeing 737-800",
+  "port": 56900,
+
+  "zones": [
+    { "id": "OVERHEAD",    "name": "Overhead Panel" },
+    { "id": "MCP",         "name": "Mode Control Panel / AFS" },
+    { "id": "FMC",         "name": "FMC / CDU" },
+    { "id": "THROTTLE",    "name": "Throttle & Engine Controls" },
+    { "id": "GEAR_FLAPS",  "name": "Gear & Flaps" },
+    { "id": "RADIOS",      "name": "Radios & Navigation" },
+    { "id": "EFIS_CAPT",   "name": "EFIS Captain Side" },
+    { "id": "EFIS_FO",     "name": "EFIS First Officer Side" },
+    { "id": "ELEC",        "name": "Electrical Panel" },
+    { "id": "FUEL",        "name": "Fuel Panel" },
+    { "id": "PEDESTAL",    "name": "Pedestal (Misc)" }
+  ],
+
+  "roles": [
+    {
+      "id": "captain",
+      "name": "Captain (PF)",
+      "zones": ["MCP", "EFIS_CAPT", "GEAR_FLAPS", "RADIOS"]
+    },
+    {
+      "id": "first_officer",
+      "name": "First Officer (PM)",
+      "zones": ["EFIS_FO", "FMC", "PEDESTAL"]
+    },
+    {
+      "id": "flight_engineer",
+      "name": "Flight Engineer",
+      "zones": ["OVERHEAD", "THROTTLE", "ELEC", "FUEL"]
+    },
+    {
+      "id": "observer",
+      "name": "Observer",
+      "zones": []
+    }
+  ],
+
+  "datarefs": [
+    { "path": "sim/cockpit/autopilot/heading_mag",          "zone": "MCP",      "type": "float",  "mode": "continuous" },
+    { "path": "sim/cockpit/autopilot/altitude",             "zone": "MCP",      "type": "float",  "mode": "continuous" },
+    { "path": "sim/cockpit/autopilot/vertical_velocity",    "zone": "MCP",      "type": "float",  "mode": "continuous" },
+    { "path": "sim/cockpit/autopilot/airspeed",             "zone": "MCP",      "type": "float",  "mode": "continuous" },
+    { "path": "sim/cockpit2/autopilot/autothrottle_enabled","zone": "MCP",      "type": "int",    "mode": "onchange" },
+    { "path": "sim/cockpit2/autopilot/heading_mode",        "zone": "MCP",      "type": "int",    "mode": "onchange" },
+    { "path": "sim/cockpit2/autopilot/altitude_hold_armed", "zone": "MCP",      "type": "int",    "mode": "onchange" },
+    { "path": "sim/cockpit2/autopilot/vnav_armed",          "zone": "MCP",      "type": "int",    "mode": "onchange" },
+    { "path": "sim/cockpit2/autopilot/lnav_armed",          "zone": "MCP",      "type": "int",    "mode": "onchange" },
+    { "path": "sim/cockpit2/autopilot/approach_armed",      "zone": "MCP",      "type": "int",    "mode": "onchange" },
+
+    { "path": "sim/cockpit2/controls/flap_handle_deploy_ratio", "zone": "GEAR_FLAPS", "type": "float", "mode": "onchange" },
+    { "path": "sim/cockpit2/controls/gear_handle_down",         "zone": "GEAR_FLAPS", "type": "int",   "mode": "onchange" },
+
+    { "path": "sim/cockpit2/radios/actuators/com1_frequency_hz",  "zone": "RADIOS", "type": "int",   "mode": "onchange" },
+    { "path": "sim/cockpit2/radios/actuators/com2_frequency_hz",  "zone": "RADIOS", "type": "int",   "mode": "onchange" },
+    { "path": "sim/cockpit2/radios/actuators/nav1_frequency_hz",  "zone": "RADIOS", "type": "int",   "mode": "onchange" },
+    { "path": "sim/cockpit2/radios/actuators/nav2_frequency_hz",  "zone": "RADIOS", "type": "int",   "mode": "onchange" },
+    { "path": "sim/cockpit2/radios/actuators/transponder_code",   "zone": "RADIOS", "type": "int",   "mode": "onchange" },
+
+    { "path": "sim/cockpit2/EFIS/EFIS_baro_setting_in_hg_pilot",  "zone": "EFIS_CAPT", "type": "float", "mode": "continuous" },
+    { "path": "sim/cockpit2/EFIS/EFIS_baro_setting_in_hg_copilot","zone": "EFIS_FO",   "type": "float", "mode": "continuous" },
+
+    { "path": "sim/cockpit2/engine/actuators/throttle_ratio",     "zone": "THROTTLE",  "type": "float_array", "mode": "continuous" },
+
+    { "path": "sim/cockpit/electrical/battery_on",                "zone": "ELEC",      "type": "int_array",   "mode": "onchange" },
+    { "path": "sim/cockpit/electrical/generator_on",              "zone": "ELEC",      "type": "int_array",   "mode": "onchange" },
+
+    { "path": "sim/cockpit2/fuel/fuel_pump_on",                   "zone": "FUEL",      "type": "int_array",   "mode": "onchange" }
+  ],
+
+  "commands": [
+    { "path": "sim/autopilot/heading_sync",       "zone": "MCP" },
+    { "path": "sim/autopilot/altitude_arm",        "zone": "MCP" },
+    { "path": "sim/autopilot/NAV",                 "zone": "MCP" },
+    { "path": "sim/autopilot/LNAV",               "zone": "MCP" },
+    { "path": "sim/autopilot/VNAV",               "zone": "MCP" },
+    { "path": "sim/autopilot/approach",            "zone": "MCP" },
+    { "path": "sim/autopilot/autothrottle_toggle", "zone": "MCP" },
+    { "path": "sim/flight_controls/landing_gear_toggle", "zone": "GEAR_FLAPS" },
+    { "path": "sim/flight_controls/flaps_down",    "zone": "GEAR_FLAPS" },
+    { "path": "sim/flight_controls/flaps_up",      "zone": "GEAR_FLAPS" }
+  ]
+}
