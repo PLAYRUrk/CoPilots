@@ -42,7 +42,6 @@ void SyncEngine::reset()
 {
     if (!reg_) { cache_.clear(); return; }
     cache_.resize(reg_->datarefs().size());
-    // Pre-populate cache with current values
     for (size_t i = 0; i < reg_->datarefs().size(); ++i) {
         const auto& rd = reg_->datarefs()[i];
         if (rd.handle)
@@ -125,13 +124,11 @@ void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
         const auto& rd = drs[i];
         if (!rd.handle) continue;
 
-        // Can we send? Only if we own the zone
         bool iOwn = session_->iOwnZone(rd.zoneId);
         if (!iOwn) continue;
 
         Cache& c = cache_[i];
 
-        // Echo-suppression: skip sending if we just applied an incoming value
         if (c.echoSuppressed) {
             c.echoSuppressed = false;
             continue;
@@ -148,7 +145,6 @@ void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
         }
     }
 
-    // Pending commands
     const auto& cmds = reg_->commands();
     if (cmdPending_.size() != cmds.size())
         cmdPending_.resize(cmds.size(), false);
@@ -168,19 +164,15 @@ void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
     const RegisteredDataref* rd = reg_->getDr(drIndex);
     if (!rd || !rd->handle) return;
 
-    // Authority check: sender must own the zone
     ParticipantId auth = session_->authorityFor(rd->zoneId);
     if (auth != senderParticipantId && auth != INVALID_PARTICIPANT_ID) {
-        // Discard — sender is not the authority for this zone
         return;
     }
 
-    // Don't apply if this is our own value being echoed back
     if (senderParticipantId == session_->myId()) return;
 
     writeDr(*rd, val);
 
-    // Suppress echo
     if (drIndex < cache_.size()) {
         cache_[drIndex].value          = val;
         cache_[drIndex].echoSuppressed = true;
@@ -193,7 +185,6 @@ void SyncEngine::applyIncomingCommand(uint16_t cmdIndex, uint8_t senderParticipa
     const RegisteredCommand* rc = reg_->getCmd(cmdIndex);
     if (!rc || !rc->handle) return;
 
-    // Authority check
     ParticipantId auth = session_->authorityFor(rc->zoneId);
     if (auth != senderParticipantId && auth != INVALID_PARTICIPANT_ID) return;
     if (senderParticipantId == session_->myId()) return;
@@ -208,4 +199,4 @@ void SyncEngine::notifyCommandFired(uint16_t cmdIndex)
     cmdPending_[cmdIndex] = true;
 }
 
-} // namespace cp
+}

@@ -9,8 +9,6 @@ namespace ui {
 
 bool StatusHud::init()
 {
-    // Small overlay in the bottom-right corner.
-    // xplm_WindowDecorationNone: clicks pass through so the cockpit stays usable.
     int scrL, scrT, scrR, scrB;
     XPLMGetScreenBoundsGlobal(&scrL, &scrT, &scrR, &scrB);
     (void)scrL; (void)scrB;
@@ -81,5 +79,5 @@ void StatusHud::renderContent()
     ImGui::End();
 }
 
-} // namespace ui
-} // namespace cp
+}
+}

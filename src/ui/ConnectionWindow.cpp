@@ -11,18 +11,13 @@
 namespace cp {
 namespace ui {
 
-// ── Init ──────────────────────────────────────────────────────────────────────
-
 bool ConnectionWindow::init()
 {
     int scrL, scrT, scrR, scrB;
     XPLMGetScreenBoundsGlobal(&scrL, &scrT, &scrR, &scrB);
     (void)scrR; (void)scrB;
-    // Initial size — will auto-resize to content every frame
     return xpwInit(scrL + 40, scrT - 40, scrL + 440, scrT - 200);
 }
-
-// ── State ─────────────────────────────────────────────────────────────────────
 
 void ConnectionWindow::setState(ConnState s, const std::string& msg)
 {
@@ -32,8 +27,6 @@ void ConnectionWindow::setState(ConnState s, const std::string& msg)
         isHost_ = false; localPort_ = 0; localIp_.clear();
     }
 }
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 static bool parseAddr(const char* buf, std::string& outHost, uint16_t& outPort)
 {
@@ -45,8 +38,6 @@ static bool parseAddr(const char* buf, std::string& outHost, uint16_t& outPort)
     outPort = static_cast<uint16_t>(p);
     return true;
 }
-
-// ── renderContent ─────────────────────────────────────────────────────────────
 
 void ConnectionWindow::renderContent()
 {
@@ -153,7 +144,6 @@ void ConnectionWindow::renderClientView()
 
 void ConnectionWindow::renderHostedView()
 {
-    // Local address info + copy button
     ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.f), "Hosting");
     if (!localIp_.empty() && localPort_ != 0) {
         ImGui::Spacing();
@@ -174,14 +164,12 @@ void ConnectionWindow::renderHostedView()
     ImGui::Separator();
     ImGui::Spacing();
 
-    // Lobby / participants table
     renderLobbyTable();
 
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
 
-    // Stop Hosting — prominent red button at the bottom
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.70f,0.10f,0.10f,1.f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.90f,0.20f,0.20f,1.f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.55f,0.05f,0.05f,1.f));
@@ -229,9 +217,15 @@ void ConnectionWindow::renderLobbyTable()
             ImGui::Text("%d", p.id);
 
             ImGui::TableSetColumnIndex(1);
-            if (p.isPhysicsMaster)
+            if (p.isPhysicsMaster && p.isWeatherMaster)
+                ImGui::TextColored(ImVec4(kAccentR,kAccentG,kAccentB,1.f),
+                                   "[M][W] %s", p.nick.c_str());
+            else if (p.isPhysicsMaster)
                 ImGui::TextColored(ImVec4(kAccentR,kAccentG,kAccentB,1.f),
                                    "[M] %s", p.nick.c_str());
+            else if (p.isWeatherMaster)
+                ImGui::TextColored(ImVec4(0.4f,0.8f,1.f,1.f),
+                                   "[W] %s", p.nick.c_str());
             else
                 ImGui::Text("%s", p.nick.c_str());
 
@@ -290,8 +284,13 @@ void ConnectionWindow::renderLobbyTable()
 
             ImGui::TableSetColumnIndex(4);
             if (!p.isPhysicsMaster) {
-                if (ImGui::SmallButton("Physics##pm"))
+                if (ImGui::SmallButton("Phys##pm"))
                     if (onPhysicsMasterSet) onPhysicsMasterSet(p.id);
+                ImGui::SameLine();
+            }
+            if (!p.isWeatherMaster) {
+                if (ImGui::SmallButton("Wthr##wm"))
+                    if (onWeatherMasterSet) onWeatherMasterSet(p.id);
                 ImGui::SameLine();
             }
             ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.6f,0.1f,0.1f,0.8f));
@@ -307,5 +306,5 @@ void ConnectionWindow::renderLobbyTable()
     ImGui::TextDisabled("[M] = Physics Master  |  Edit to customise zones");
 }
 
-} // namespace ui
-} // namespace cp
+}
+}

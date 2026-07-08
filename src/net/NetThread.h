@@ -1,6 +1,4 @@
 #pragma once
-// NetThread.h — background network I/O thread with thread-safe message queues.
-// All socket operations happen here; main thread exchanges messages via InQueue/OutQueue.
 
 #include "Transport.h"
 #include <cstdint>
@@ -15,20 +13,17 @@
 namespace cp {
 namespace net {
 
-// A framed TCP message (already de-framed by TcpFramer)
 struct InboundMsg {
-    uint8_t              sender = 0;    // participant id (0 = server, on client side)
+    uint8_t              sender = 0;
     uint8_t              type   = 0;
     std::vector<uint8_t> payload;
 };
 
-// An outbound TCP message (raw framed bytes, ready to send)
 struct OutboundMsg {
-    uint8_t              target = 0xFF; // 0xFF = broadcast (server only)
-    std::vector<uint8_t> frame;         // includes header
+    uint8_t              target = 0xFF;
+    std::vector<uint8_t> frame;
 };
 
-// Thread-safe queue
 template<typename T>
 class SafeQueue {
 public:
@@ -56,22 +51,11 @@ private:
     std::mutex    mu_;
 };
 
-// UDP datagram
 struct UdpDatagram {
     std::vector<uint8_t> data;
     UdpEndpoint          from;
-    UdpEndpoint          to;   // for outbound
+    UdpEndpoint          to;
 };
-
-// ── NetThread — runs in its own thread ────────────────────────────────────
-// Usage:
-//   NetThread t;
-//   t.startServer(port);   OR   t.startClient(host, port);
-//   // from main thread:
-//   t.outTcp.push(msg);     // send
-//   t.inTcp.pop(msg);       // receive
-//   t.outUdp.push(dgram);   // send UDP
-//   t.inUdp.pop(dgram);     // receive UDP
 
 class NetThread {
 public:
@@ -80,11 +64,10 @@ public:
     SafeQueue<UdpDatagram> inUdp;
     SafeQueue<UdpDatagram> outUdp;
 
-    // Atomic status flags (readable from main thread)
     std::atomic<bool> connected  {false};
     std::atomic<bool> running    {false};
     std::atomic<bool> hasError   {false};
-    std::string       lastError;   // set before hasError
+    std::string       lastError;
 
     bool startServer(uint16_t tcpPort, uint16_t udpPort);
     bool startClient(const std::string& host, uint16_t tcpPort, uint16_t udpPort);
@@ -99,16 +82,15 @@ private:
     std::thread               thread_;
     std::atomic<bool>         stopFlag_{false};
 
-    // Server state (accessed only from net thread)
     struct ClientConn {
         uint8_t       id = 0;
         SocketHandle  sock = INVALID_SOCK;
         TcpFramer     framer;
-        UdpEndpoint   udpEp;  // filled after first UDP packet from this client
+        UdpEndpoint   udpEp;
     };
 
     bool isServer_ = false;
 };
 
-} // namespace net
-} // namespace cp
+}
+}

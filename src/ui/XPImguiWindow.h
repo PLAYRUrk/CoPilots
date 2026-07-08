@@ -24,8 +24,6 @@ protected:
     int xpwWidth()  const { return xpR_ - xpL_; }
     int xpwHeight() const { return xpT_ - xpB_; }
 
-    // Convenience wrappers: call these instead of ImGui::Begin/End in renderContent().
-    // xpwEndWindow() captures the window size so onDraw() can auto-resize the XPLM window.
     bool xpwBeginWindow(const char* title, ImGuiWindowFlags extraFlags = 0);
     void xpwEndWindow();
 
@@ -45,7 +43,7 @@ private:
 
     float titleBarH_  = 20.f;
     int   screenH_    = 0;
-    bool  hasKbFocus_ = false;  // tracks whether we currently own XPLM keyboard focus
+    bool  hasKbFocus_ = false;
     std::chrono::steady_clock::time_point lastTime_;
 
     void onDraw();
@@ -61,5 +59,5 @@ private:
     static XPLMCursorStatus CursorCB(XPLMWindowID, int, int, void*);
 };
 
-} // namespace ui
-} // namespace cp
+}
+}

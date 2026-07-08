@@ -8,7 +8,6 @@ namespace cp {
 static DrType resolveType(XPLMDataRef handle)
 {
     XPLMDataTypeID types = XPLMGetDataRefTypes(handle);
-    // Check from most specific to least
     if (types & xplmType_Double)   return DrType::DOUBLE;
     if (types & xplmType_FloatArray) return DrType::FLOAT_ARR;
     if (types & xplmType_IntArray)   return DrType::INT_ARR;
@@ -73,4 +72,4 @@ void DatarefRegistry::clear()
     commands_.clear();
 }
 
-} // namespace cp
+}

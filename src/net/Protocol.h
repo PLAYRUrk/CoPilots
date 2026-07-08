@@ -1,8 +1,4 @@
 #pragma once
-// Protocol.h — binary wire protocol for CoPilots.
-//
-// TCP framing:  [uint8_t type][uint32_t payload_len][payload...]
-// UDP framing:  [uint8_t type][payload...]  (fixed-size per type, no length field)
 
 #include <cstdint>
 #include <vector>
@@ -12,47 +8,40 @@ namespace cp {
 namespace proto {
 
 constexpr uint8_t PROTOCOL_VERSION = 1;
-constexpr size_t  TCP_HEADER_SIZE  = 5; // type(1) + length(4)
+constexpr size_t  TCP_HEADER_SIZE  = 5;
 
-// ── TCP message types ──────────────────────────────────────────────────────
 enum class MsgType : uint8_t {
-    // Handshake
-    HELLO             = 0x01,  // client→server: {version, nick}
-    WELCOME           = 0x02,  // server→client: {assigned_id, full state}
-    REJECT            = 0x03,  // server→client: {reason string}
+    HELLO             = 0x01,
+    WELCOME           = 0x02,
+    REJECT            = 0x03,
 
-    // Participant management
-    PARTICIPANT_JOIN   = 0x10,  // broadcast: new participant
-    PARTICIPANT_LEAVE  = 0x11,  // broadcast: participant disconnected
-    PARTICIPANT_UPDATE = 0x12,  // broadcast: nick/role/zones changed
+    PARTICIPANT_JOIN   = 0x10,
+    PARTICIPANT_LEAVE  = 0x11,
+    PARTICIPANT_UPDATE = 0x12,
 
-    // Admin operations (server only sends to all; clients send to server)
-    ROLE_ASSIGN        = 0x20,  // admin→server: {target_id, role_id}
-    ZONE_ASSIGN        = 0x21,  // admin→server: {target_id, zone_ids[]}
-    KICK               = 0x22,  // admin→server: {target_id}
-    PHYSICS_MASTER_SET = 0x23,  // admin→server: {target_id}
+    ROLE_ASSIGN        = 0x20,
+    ZONE_ASSIGN        = 0x21,
+    KICK               = 0x22,
+    PHYSICS_MASTER_SET = 0x23,
+    WEATHER_MASTER_SET = 0x24,
 
-    // Authority map — full zone→owner map, sent after any assignment change
-    AUTHORITY_MAP      = 0x30,  // server→all: {zone_id→participant_id map}
+    AUTHORITY_MAP      = 0x30,
 
-    // Dataref / command sync
-    DATAREF_SET        = 0x40,  // any→server→all: {dr_index, type, value}
-    COMMAND_FIRE       = 0x41,  // any→server→all: {cmd_index} (matches plugin.cpp usage)
+    DATAREF_SET        = 0x40,
+    COMMAND_FIRE       = 0x41,
+    WEATHER_STATE      = 0x42,
 
-    // Infrastructure
-    HEARTBEAT          = 0xF0,  // bidirectional, no payload
-    CHAT               = 0xF1,  // optional: {participant_id, message}
+    HEARTBEAT          = 0xF0,
+    CHAT               = 0xF1,
 };
 
-// ── UDP message types ──────────────────────────────────────────────────────
 enum class UdpType : uint8_t {
-    PHYSICS_STATE  = 0x01,  // physics master→all: position/attitude/velocities
-    CONTROL_INPUT  = 0x02,  // control zone owner→physics master: axes
-    PING           = 0x03,  // client→server: {seq, timestamp_ms}
-    PONG           = 0x04,  // server→client: {seq, timestamp_ms}
+    PHYSICS_STATE  = 0x01,
+    CONTROL_INPUT  = 0x02,
+    PING           = 0x03,
+    PONG           = 0x04,
 };
 
-// ── Value types for DATAREF_SET ───────────────────────────────────────────
 enum class ValType : uint8_t {
     INT       = 0,
     FLOAT     = 1,
@@ -62,34 +51,31 @@ enum class ValType : uint8_t {
     BYTES     = 5,
 };
 
-// ── Structures ────────────────────────────────────────────────────────────
-
-// Physics state — UDP packet (~128 bytes)
 #pragma pack(push, 1)
 struct PhysicsState {
     uint8_t  type = static_cast<uint8_t>(UdpType::PHYSICS_STATE);
     uint32_t seq;
-    double   lat, lon, alt;    // degrees, degrees, metres MSL
-    float    pitch, roll, hdg; // degrees
-    float    vx, vy, vz;       // m/s ECEF-local
-    float    p, q, r;          // rad/s roll,pitch,yaw rates
-    float    flap_ratio;       // 0..1
-    float    gear_ratio;       // 0..1
-    float    throttle[8];      // 0..1 per engine
-    float    aileron;          // -1..1
-    float    elevator;         // -1..1
-    float    rudder;           // -1..1
-    float    speedbrake;       // 0..1
+    double   lat, lon, alt;
+    float    pitch, roll, hdg;
+    float    vx, vy, vz;
+    float    p, q, r;
+    float    flap_ratio;
+    float    gear_ratio;
+    float    throttle[8];
+    float    aileron;
+    float    elevator;
+    float    rudder;
+    float    speedbrake;
 };
 static_assert(sizeof(PhysicsState) < 512, "PhysicsState too large for single UDP");
 
 struct ControlInput {
     uint8_t  type = static_cast<uint8_t>(UdpType::CONTROL_INPUT);
     uint8_t  participant_id;
-    float    roll_axis;     // -1..1
-    float    pitch_axis;    // -1..1
-    float    yaw_axis;      // -1..1
-    float    throttle[8];   // 0..1
+    float    roll_axis;
+    float    pitch_axis;
+    float    yaw_axis;
+    float    throttle[8];
 };
 
 struct UdpPing {
@@ -105,13 +91,11 @@ struct UdpPong {
 };
 #pragma pack(pop)
 
-// ── Builder helpers ────────────────────────────────────────────────────────
-
 class MsgBuilder {
 public:
     explicit MsgBuilder(MsgType t) {
         buf_.push_back(static_cast<uint8_t>(t));
-        buf_.resize(TCP_HEADER_SIZE); // reserve space for length
+        buf_.resize(TCP_HEADER_SIZE);
     }
 
     MsgBuilder& u8(uint8_t v)  { buf_.push_back(v); return *this; }
@@ -141,7 +125,6 @@ public:
         return *this;
     }
 
-    // Finalise: write payload length at offset 1
     std::vector<uint8_t> build() {
         uint32_t plen = static_cast<uint32_t>(buf_.size()) - TCP_HEADER_SIZE;
         buf_[1] = plen & 0xFF;
@@ -155,7 +138,6 @@ private:
     std::vector<uint8_t> buf_;
 };
 
-// ── Reader helper ─────────────────────────────────────────────────────────
 class MsgReader {
 public:
     MsgReader(const uint8_t* data, size_t len)
@@ -189,5 +171,5 @@ private:
     size_t len_, pos_;
 };
 
-} // namespace proto
-} // namespace cp
+}
+}

@@ -6,7 +6,6 @@
 
 namespace cp {
 
-// Dataref paths for position override
 static const char* DR_LAT      = "sim/flightmodel/position/latitude";
 static const char* DR_LON      = "sim/flightmodel/position/longitude";
 static const char* DR_ELEV     = "sim/flightmodel/position/elevation";
@@ -51,7 +50,6 @@ void PhysicsSync::sendState()
     s.type = static_cast<uint8_t>(proto::UdpType::PHYSICS_STATE);
     s.seq  = seq_++;
 
-    // Read from sim datarefs
     XPLMDataRef dr;
     auto rdbl = [&](const char* path, double& out) {
         dr = XPLMFindDataRef(path);
@@ -75,11 +73,9 @@ void PhysicsSync::sendState()
     rflt(DR_Q,     s.q);
     rflt(DR_R,     s.r);
 
-    // Throttle
     XPLMDataRef thrRef = XPLMFindDataRef("sim/flightmodel/engine/ENGN_thro_use");
     if (thrRef) XPLMGetDatavf(thrRef, s.throttle, 0, 8);
 
-    // Control surfaces
     XPLMDataRef ailRef  = XPLMFindDataRef("sim/flightmodel2/controls/aileron_avg");
     XPLMDataRef elvRef  = XPLMFindDataRef("sim/flightmodel2/controls/elevator_avg");
     XPLMDataRef rudRef  = XPLMFindDataRef("sim/flightmodel2/controls/rudder_avg");
@@ -91,11 +87,9 @@ void PhysicsSync::sendState()
     if (flapRef) s.flap_ratio = XPLMGetDataf(flapRef);
     if (sbRef)   s.speedbrake = XPLMGetDataf(sbRef);
 
-    // Enqueue as UDP broadcast (target=0xFF means all from server's perspective)
     net::UdpDatagram dg;
     dg.data.resize(sizeof(s));
     memcpy(dg.data.data(), &s, sizeof(s));
-    // to.ip / to.port left empty — NetThread broadcasts by iterating known clients
     net_->outUdp.push(std::move(dg));
 }
 
@@ -103,10 +97,9 @@ void PhysicsSync::onUdpDatagram(const uint8_t* data, size_t len)
 {
     if (len < sizeof(proto::PhysicsState)) return;
     if (data[0] != static_cast<uint8_t>(proto::UdpType::PHYSICS_STATE)) return;
-    if (session_ && session_->isPhysicsMaster()) return; // ignore our own broadcasts
+    if (session_ && session_->isPhysicsMaster()) return;
 
     const proto::PhysicsState* s = reinterpret_cast<const proto::PhysicsState*>(data);
-    // Accept only newer sequence (ignore reorders)
     if (hasState_ && s->seq <= latestState_.seq) return;
     latestState_ = *s;
     hasState_    = true;
@@ -137,4 +130,4 @@ void PhysicsSync::applyState(const proto::PhysicsState& s)
     wflt(DR_R,     s.r);
 }
 
-} // namespace cp
+}

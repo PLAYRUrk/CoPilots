@@ -29,5 +29,5 @@ private:
     float          packetLoss_ = 0.f;
 };
 
-} // namespace ui
-} // namespace cp
+}
+}

@@ -72,8 +72,6 @@ void CloseSocket(SocketHandle sock)
 #endif
 }
 
-// ── TCP ───────────────────────────────────────────────────────────────────
-
 SocketHandle TcpListen(uint16_t port, int backlog)
 {
     SocketHandle s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -82,7 +80,6 @@ SocketHandle TcpListen(uint16_t port, int backlog)
         return INVALID_SOCK;
     }
 
-    // Allow port reuse
     int opt = 1;
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR,
                reinterpret_cast<const char*>(&opt), sizeof(opt));
@@ -148,7 +145,6 @@ SocketHandle TcpConnect(const std::string& host, uint16_t port, int timeout_ms)
     connect(s, res->ai_addr, static_cast<int>(res->ai_addrlen));
     freeaddrinfo(res);
 
-    // Wait for writable (connect completed)
     fd_set wset, eset;
     FD_ZERO(&wset); FD_ZERO(&eset);
     FD_SET(s, &wset); FD_SET(s, &eset);
@@ -162,7 +158,6 @@ SocketHandle TcpConnect(const std::string& host, uint16_t port, int timeout_ms)
         CloseSocket(s);
         return INVALID_SOCK;
     }
-    // Verify no error
     int err = 0;
 #ifdef _WIN32
     int len = sizeof(err);
@@ -186,7 +181,7 @@ bool TcpSendAll(SocketHandle sock, const uint8_t* data, size_t len)
         int n = send(sock, reinterpret_cast<const char*>(data+sent),
                      static_cast<int>(len-sent), 0);
         if (n == SOCKET_ERROR) {
-            if (WouldBlock()) continue; // spin on EWOULDBLOCK (rare in blocking send)
+            if (WouldBlock()) continue;
             return false;
         }
         sent += static_cast<size_t>(n);
@@ -197,15 +192,13 @@ bool TcpSendAll(SocketHandle sock, const uint8_t* data, size_t len)
 int TcpRecv(SocketHandle sock, uint8_t* buf, int bufLen)
 {
     int n = recv(sock, reinterpret_cast<char*>(buf), bufLen, 0);
-    if (n == 0) return 0;   // connection closed
+    if (n == 0) return 0;
     if (n < 0) {
         if (WouldBlock()) return -1;
-        return -2;           // real error
+        return -2;
     }
     return n;
 }
-
-// ── UDP ───────────────────────────────────────────────────────────────────
 
 SocketHandle UdpBind(uint16_t port)
 {
@@ -260,25 +253,21 @@ int UdpRecvFrom(SocketHandle sock, uint8_t* buf, int bufLen, UdpEndpoint& from)
     return n;
 }
 
-// ── TcpFramer ─────────────────────────────────────────────────────────────
-
 void TcpFramer::feed(const uint8_t* data, size_t len, MessageCb cb)
 {
     buf_.insert(buf_.end(), data, data + len);
 
-    // Frame: [type:1][payload_len:4][payload:N]
     while (buf_.size() >= 5) {
         uint32_t plen =  static_cast<uint32_t>(buf_[1])
                       | (static_cast<uint32_t>(buf_[2]) <<  8)
                       | (static_cast<uint32_t>(buf_[3]) << 16)
                       | (static_cast<uint32_t>(buf_[4]) << 24);
         if (plen > 1024*1024) {
-            // Sanity check; reset on garbage
             buf_.clear();
             LogError("TcpFramer: oversized payload %u — resetting", plen);
             return;
         }
-        if (buf_.size() < 5 + plen) break; // not enough data yet
+        if (buf_.size() < 5 + plen) break;
 
         uint8_t type = buf_[0];
         cb(type, buf_.data() + 5, plen);
@@ -286,5 +275,5 @@ void TcpFramer::feed(const uint8_t* data, size_t len, MessageCb cb)
     }
 }
 
-} // namespace net
-} // namespace cp
+}
+}

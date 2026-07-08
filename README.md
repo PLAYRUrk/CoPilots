@@ -1,143 +1,82 @@
 # CoPilots — Multi-Crew Shared Cockpit for X-Plane 11
 
-**CoPilots** lets an unlimited number of pilots share a single cockpit in X-Plane 11.
-Each pilot gets a **role** and **zones** they control; every other position is read-only.
-The session admin (host) manages assignments live from the lobby panel.
+Fly a single cockpit with multiple people simultaneously. Each pilot controls only the zones assigned to them; everything else is read-only. The host manages crew assignments live from the lobby.
 
 ---
 
-## Features (MVP)
+## Requirements
 
-| Feature | Status |
-|---|---|
-| Unlimited crew members | ✅ |
-| TCP (reliable state) + UDP (high-freq physics) | ✅ |
-| Zone-based authority (each zone has exactly one owner) | ✅ |
-| Roles (Captain, FO, FE, Observer …) | ✅ |
-| Admin lobby: assign roles/zones, kick, set physics master | ✅ |
-| Dear ImGui modern dark UI | ✅ |
-| copilots.json aircraft config | ✅ |
-| smartcopilot.cfg fallback (basic sync, no zones) | ✅ |
+- **X-Plane 11** (Windows)
+- The plugin file `win.xpl` from the latest release
 
 ---
 
-## Prerequisites
+## Installation
 
-### 1 — Visual Studio 2022 (Windows)
-
-Download [Visual Studio 2022 Community](https://visualstudio.microsoft.com/vs/community/) (free).
-During installation select workload:
-> **Desktop development with C++**
-
-This installs MSVC compiler, CMake, and Windows SDK automatically.
-
-### 2 — CMake 3.15+
-
-CMake is bundled with Visual Studio. Alternatively install from [cmake.org](https://cmake.org/download/).
-
-Verify: open **Developer Command Prompt** (search in Start) and run:
-```
-cmake --version
-```
-
-### 3 — X-Plane 11 SDK
-
-1. Go to [developer.x-plane.com/sdk/plugin-sdk-downloads/](https://developer.x-plane.com/sdk/plugin-sdk-downloads/)
-2. Download **SDK 3.0.3** (the XPLM SDK for XP11)
-3. Extract the zip so that the structure looks like:
+1. Download the latest release archive.
+2. Extract the `CoPilots` folder.
+3. Copy it into your X-Plane plugins directory:
 
 ```
-CoPilots/
-  third_party/
-    SDK/
-      CHeaders/
-        XPLM/
-          XPLMPlugin.h   ← must exist
-          ...
-        XPWidgets/
-          ...
-      Libraries/
-        Win/
-          XPLM_64.lib
-          XPWidgets_64.lib
+X-Plane 11\Resources\plugins\CoPilots\
 ```
+
+The result should look like:
+
+```
+plugins\
+  CoPilots\
+    64\
+      win.xpl
+    configs\
+      copilots.example.json
+```
+
+4. Start X-Plane. The plugin appears under **Plugins → CoPilots**.
 
 ---
 
-## Build (Windows)
+## Hosting a session
 
-Open **Developer Command Prompt for VS 2022** (or any terminal where `cmake` is on PATH):
+1. Load your aircraft.
+2. Open **Plugins → CoPilots → Connect / Host**.
+3. Enter your nickname, set a port (default: **56900**), click **Start Hosting**.
+4. Share your **IP:Port** with your crew (the address is shown with a Copy button).
+5. The lobby opens automatically. Use it to assign roles and zones to each crew member.
 
-```cmd
-cd C:\Users\egorb\Documents\GitHub\CoPilots
-
-:: Configure (downloads ImGui + nlohmann/json automatically)
-cmake -B build -A x64
-
-:: Build Release
-cmake --build build --config Release
-```
-
-After building, the plugin is staged to:
-```
-build\install\CoPilots\
-  64\
-    win.xpl        ← the plugin
-  configs\
-    copilots.example.json
-```
+> **Firewall:** allow X-Plane through Windows Firewall on TCP and UDP ports 56900 and 56901.
 
 ---
 
-## Install
+## Joining a session
 
-Copy the `CoPilots` folder into X-Plane's plugin directory:
-
-```
-X-Plane 11\
-  Resources\
-    plugins\
-      CoPilots\          ← paste here
-        64\
-          win.xpl
-        configs\
-          copilots.example.json
-```
+1. Open **Plugins → CoPilots → Connect / Host**.
+2. Enter your nickname and the host's **IP:Port**, click **Join**.
 
 ---
 
-## Aircraft Configuration
+## Aircraft configuration
 
-### New format — `copilots.json`
+Place a `copilots.json` file in your aircraft's folder to define zones, roles, and which datarefs belong to which zone.
 
-Place `copilots.json` in your aircraft's folder
-(e.g. `X-Plane 11/Aircraft/Extra Aircraft/B737-800/copilots.json`).
+**Example** (`copilots.example.json` is included in the `configs` folder):
 
-See `configs/copilots.example.json` for a full example.
-
-Key sections:
-
-```jsonc
+```json
 {
   "version": 1,
   "aircraft": "Boeing 737-800",
   "port": 56900,
-
   "zones": [
     { "id": "MCP", "name": "Mode Control Panel" },
     { "id": "OVERHEAD", "name": "Overhead Panel" }
-    // ...
   ],
-
   "roles": [
-    { "id": "captain", "name": "Captain (PF)", "zones": ["MCP", "EFIS_CAPT"] },
-    { "id": "first_officer", "name": "First Officer (PM)", "zones": ["FMC", "EFIS_FO"] }
+    { "id": "captain", "name": "Captain (PF)", "zones": ["MCP"] },
+    { "id": "fo", "name": "First Officer (PM)", "zones": ["OVERHEAD"] }
   ],
-
   "datarefs": [
     { "path": "sim/cockpit/autopilot/heading_mag", "zone": "MCP", "type": "float", "mode": "continuous" }
   ],
-
   "commands": [
     { "path": "sim/autopilot/NAV", "zone": "MCP" }
   ]
@@ -145,84 +84,33 @@ Key sections:
 ```
 
 **Sync modes:**
-- `"onchange"` — sent only when value changes (toggles, mode selectors)
-- `"continuous"` — sent every tick (~20 Hz) regardless (knobs, analog values)
+- `onchange` — sent when value changes (switches, buttons)
+- `continuous` — sent every tick at ~20 Hz (knobs, analog values)
 
-### Fallback — `smartcopilot.cfg`
-
-If `copilots.json` is absent, CoPilots parses `smartcopilot.cfg` automatically.
-All datarefs go into a single `SHARED` zone; zone/role features are unavailable.
-The UI shows a warning banner in the lobby.
+**No config file?** CoPilots automatically falls back to `smartcopilot.cfg` if present. Basic sync works; zone and role features are unavailable.
 
 ---
 
-## Usage
+## Status HUD
 
-1. Start X-Plane 11 with the aircraft loaded.
-2. Go to **Plugins → CoPilots → Connect / Host**.
-3. **Host:** Enter your nickname → click **Start Hosting**. Share your IP with others.
-4. **Join:** Enter the host's IP, port, your nickname → click **Join**.
-5. **Admin (host):** Open **Plugins → CoPilots → Lobby (Admin Panel)**.
-   - Assign roles via dropdown.
-   - Click **Edit** to customise individual zone assignments.
-   - Click **Physics** to transfer physics master to another pilot.
-   - Click **Kick** to remove a participant.
-
-### Default port
-
-TCP: **56900**, UDP: **56901**
-
-> Make sure X-Plane is allowed through Windows Firewall on these ports if hosting.
-
----
-
-## Network topology
-
-```
-[Captain PC]  ──TCP+UDP──┐
-[FO PC]       ──TCP+UDP──┤── [Host/Server PC + X-Plane]
-[FE PC]       ──TCP+UDP──┘
-```
-
-- **TCP**: lobby state, dataref changes, commands (guaranteed delivery)
-- **UDP**: physics position/attitude/velocities from physics master (~20 Hz, low latency)
-- The **physics master** is the sole source of aircraft position (default = host). Can be reassigned.
-- Each participant's zone controls are **authoritative** — others receive the values and apply them locally.
+A small overlay appears in the bottom-right corner showing your role, zones, ping, and crew count. Toggle it via **Plugins → CoPilots → Toggle HUD**.
 
 ---
 
 ## Troubleshooting
 
-| Problem | Solution |
+| Problem | What to check |
 |---|---|
-| Plugin not visible in menu | Check `Log.txt` for `[CoPilots]` lines. Ensure SDK `Libraries/Win/*.lib` exist. |
-| `XPLM_64.lib` not found | Re-extract SDK, verify `third_party/SDK/Libraries/Win/` exists. |
-| Can't connect | Firewall: allow X-Plane on TCP/UDP 56900-56901. Check host IP is correct. |
-| Datarefs not syncing | Verify `copilots.json` has correct `path` values for your aircraft. |
-| Physics jitter | Normal at high ping (>150 ms). Reassign physics master to lowest-latency participant. |
+| Plugin not in menu | Look for `[CoPilots]` lines in X-Plane's `Log.txt` |
+| Can't connect | Firewall — allow X-Plane on TCP/UDP 56900–56901. Confirm the host IP is reachable. |
+| Datarefs not syncing | Check `path` values in `copilots.json` match your aircraft's actual datarefs |
+| Physics jitter | High ping (>150 ms). Ask the host to reassign Physics Master to the lowest-latency pilot. |
 
 ---
 
-## Architecture Overview
+## Default ports
 
-```
-plugin.cpp               ← XPlugin* entry points, main loop, message routing
-├── config/Config.cpp    ← loads copilots.json or smartcopilot.cfg
-├── net/Transport.cpp    ← cross-platform Winsock/BSD sockets (TCP+UDP)
-├── net/NetThread.cpp    ← background I/O thread, safe queues
-├── session/Session.cpp  ← lobby state: participants, roles, zone→owner map
-├── sync/SyncEngine.cpp  ← dataref change detection, apply, echo-suppression
-├── sync/PhysicsSync.cpp ← UDP physics state send/receive/apply
-└── ui/
-    ├── ImguiBackend.cpp ← Dear ImGui ↔ X-Plane draw/input integration
-    ├── Theme.cpp        ← dark modern colour theme
-    ├── ConnectionWindow.cpp
-    ├── LobbyWindow.cpp
-    └── StatusHud.cpp
-```
-
----
-
-## License
-
-MIT — free to use, modify, and distribute.
+| Protocol | Port |
+|---|---|
+| TCP (lobby + state) | 56900 |
+| UDP (physics) | 56901 |

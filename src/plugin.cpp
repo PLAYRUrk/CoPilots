@@ -1,21 +1,9 @@
-// plugin.cpp — CoPilots X-Plane 11 Plugin
-// Entry point: XPluginStart / XPluginStop / XPluginEnable / XPluginDisable / XPluginReceiveMessage
-//
-// Ownership hierarchy:
-//   Plugin (singleton)
-//     ├── Config
-//     ├── DatarefRegistry
-//     ├── Session
-//     ├── NetThread
-//     ├── SyncEngine
-//     ├── PhysicsSync
-//     └── UI (ImguiBackend, ConnectionWindow, LobbyWindow, StatusHud)
-
 #include "Log.h"
 #include "config/Config.h"
 #include "sync/DatarefRegistry.h"
 #include "sync/SyncEngine.h"
 #include "sync/PhysicsSync.h"
+#include "sync/WeatherSync.h"
 #include "session/Session.h"
 #include "net/NetThread.h"
 #include "net/Protocol.h"
@@ -36,8 +24,6 @@
 #include <vector>
 #include <algorithm>
 
-// ── Plugin class ──────────────────────────────────────────────────────────
-// Bring cp::Log / cp::LogWarning into scope for the whole file
 using namespace cp;
 
 struct CoPilotsPlugin {
@@ -48,30 +34,25 @@ struct CoPilotsPlugin {
     cp::net::NetThread      netThread;
     cp::SyncEngine          syncEngine;
     cp::PhysicsSync         physicsSync;
+    cp::WeatherSync         weatherSync;
 
-    // UI
     cp::ui::ConnectionWindow connWin;
     cp::ui::StatusHud        statusHud;
 
-    // X-Plane menu
     XPLMMenuID menuId    = nullptr;
     int        menuItem  = -1;
 
-    // Flight loop handle
     XPLMFlightLoopID flLoop = nullptr;
 
-    bool active = false; // between Enable and Disable
+    bool active = false;
 
-    // ── Construction / init ───────────────────────────────────────────────
     void onEnable()
     {
         Log("Plugin enabled");
         cp::net::InitNetwork();
 
-        // Wire session callbacks
-        session.onChanged = [this]() { /* UI refreshed in next draw */ };
+        session.onChanged = [this]() { };
 
-        // Wire UI → network
         connWin.onHost = [this](const cp::ui::ConnectionConfig& cfg) {
             onHost(cfg);
         };
@@ -80,7 +61,6 @@ struct CoPilotsPlugin {
         };
         connWin.onDisconnect = [this]() { onDisconnect(); };
 
-        // Lobby / admin callbacks wired directly into the main window
         connWin.onStopHosting = [this]() { onDisconnect(); };
         connWin.onRoleAssign = [this](cp::ParticipantId pid, const std::string& roleId) {
             session.setRole(pid, roleId, config.get().roles);
@@ -109,20 +89,29 @@ struct CoPilotsPlugin {
             out.frame  = std::move(frame);
             netThread.outTcp.push(std::move(out));
         };
+        connWin.onWeatherMasterSet = [this](cp::ParticipantId pid) {
+            session.setWeatherMaster(pid);
+            auto frame = cp::proto::MsgBuilder(cp::proto::MsgType::WEATHER_MASTER_SET)
+                         .u8(pid).build();
+            cp::net::OutboundMsg out;
+            out.target = 0xFF;
+            out.frame  = std::move(frame);
+            netThread.outTcp.push(std::move(out));
+        };
 
         connWin.init();
         statusHud.init();
         statusHud.setSession(&session);
         connWin.setData(&session, &config.get());
+        weatherSync.init(&session, &netThread);
 
-        // Register flight loop callback (~20 Hz)
         XPLMCreateFlightLoop_t params{};
         params.structSize = sizeof(params);
         params.phase      = xplm_FlightLoop_Phase_AfterFlightModel;
-        params.callbackFunc = [](float /*sincelast*/, float /*elapsed*/,
-                                 int /*count*/, void* ref) -> float {
+        params.callbackFunc = [](float , float ,
+                                 int , void* ref) -> float {
             static_cast<CoPilotsPlugin*>(ref)->onFlightLoop();
-            return -1.f; // reschedule every frame
+            return -1.f;
         };
         params.refcon = this;
         flLoop = XPLMCreateFlightLoop(&params);
@@ -148,18 +137,15 @@ struct CoPilotsPlugin {
         Log("Plugin disabled");
     }
 
-    // ── Flight loop ───────────────────────────────────────────────────────
     void onFlightLoop()
     {
         if (!active) return;
 
-        // 1. Drain inbound TCP messages
         cp::net::InboundMsg msg;
         while (netThread.inTcp.pop(msg)) {
             handleTcpMessage(msg);
         }
 
-        // 2. Drain inbound UDP datagrams
         cp::net::UdpDatagram dg;
         while (netThread.inUdp.pop(dg)) {
             if (!dg.data.empty()) {
@@ -169,25 +155,23 @@ struct CoPilotsPlugin {
             }
         }
 
-        // 3. Sync engine tick (detect changed datarefs, fire callbacks)
         if (registry.datarefs().size() > 0 && netThread.connected) {
             syncEngine.tick(
-                // onDatarefChanged: build DATAREF_SET message and queue it
                 [this](uint16_t idx, const cp::DrValue& val) {
                     sendDatarefSet(idx, val);
                 },
-                // onCommandFired
                 [this](uint16_t idx) {
                     sendCommandFire(idx);
                 }
             );
         }
 
-        // 4. Physics sync tick
         if (netThread.connected)
             physicsSync.tick();
 
-        // 5. Update connection status in UI
+        if (netThread.connected)
+            weatherSync.tick(1.f / 60.f);
+
         if (netThread.hasError) {
             connWin.setState(cp::ui::ConnState::CONNECT_ERROR, netThread.lastError);
             netThread.hasError = false;
@@ -195,7 +179,6 @@ struct CoPilotsPlugin {
         }
     }
 
-    // ── TCP message handling ──────────────────────────────────────────────
     void handleTcpMessage(const cp::net::InboundMsg& msg)
     {
         using MT = cp::proto::MsgType;
@@ -203,15 +186,12 @@ struct CoPilotsPlugin {
         cp::proto::MsgReader r(msg.payload.data(), msg.payload.size());
 
         switch (type) {
-        // Server-side: receive from clients
         case MT::HELLO: {
             uint8_t ver = r.u8();
             std::string nick = r.str();
             (void)ver;
-            // Add participant, send WELCOME back with assigned id + authority map
             cp::ParticipantId pid = session.addParticipant(nick);
 
-            // Build WELCOME
             auto authMap = session.buildAuthorityMap();
             auto wb = cp::proto::MsgBuilder(MT::WELCOME).u8(pid);
             wb.u16(static_cast<uint16_t>(session.participants().size()));
@@ -221,13 +201,11 @@ struct CoPilotsPlugin {
                 for (const auto& z : p.zoneIds) wb.str(z);
             }
             wb.u8(session.physicsMasterId());
-            // Send WELCOME only to the new client
             cp::net::OutboundMsg welcomeOut;
             welcomeOut.target = msg.sender;
             welcomeOut.frame  = wb.build();
             netThread.outTcp.push(std::move(welcomeOut));
 
-            // Broadcast PARTICIPANT_JOIN to others
             auto jb = cp::proto::MsgBuilder(MT::PARTICIPANT_JOIN)
                       .u8(pid).str(nick);
             cp::net::OutboundMsg joinOut;
@@ -240,7 +218,6 @@ struct CoPilotsPlugin {
         }
 
         case MT::WELCOME: {
-            // Client receives from server
             cp::ParticipantId myId = r.u8();
             session.setMyId(myId);
             session.setIsHost(false);
@@ -253,7 +230,7 @@ struct CoPilotsPlugin {
                 uint8_t nzones      = r.u8();
                 std::vector<std::string> zones;
                 for (uint8_t z = 0; z < nzones; ++z) zones.push_back(r.str());
-                session.addParticipant(nick); // returns pid; we then assign
+                session.addParticipant(nick);
                 session.assignZones(pid, zones);
                 session.setRole(pid, roleId, config.get().roles);
             }
@@ -316,11 +293,9 @@ struct CoPilotsPlugin {
             }
             syncEngine.applyIncoming(idx, val, msg.sender);
 
-            // If server, relay to all others
             if (session.isHost()) {
                 cp::net::OutboundMsg relay;
-                relay.target = 0xFF; // server will skip the sender internally
-                // Rebuild the frame (easiest; payload already contains it)
+                relay.target = 0xFF;
                 relay.frame.resize(5 + msg.payload.size());
                 relay.frame[0] = msg.type;
                 uint32_t plen = static_cast<uint32_t>(msg.payload.size());
@@ -337,7 +312,6 @@ struct CoPilotsPlugin {
         case MT::COMMAND_FIRE: {
             uint16_t idx = r.u16();
             syncEngine.applyIncomingCommand(idx, msg.sender);
-            // Relay on server
             if (session.isHost()) {
                 cp::net::OutboundMsg relay;
                 relay.target = 0xFF;
@@ -382,10 +356,40 @@ struct CoPilotsPlugin {
             break;
         }
 
+        case MT::WEATHER_MASTER_SET: {
+            cp::ParticipantId pid = r.u8();
+            session.setWeatherMaster(pid);
+            if (session.isHost()) {
+                auto frame = cp::proto::MsgBuilder(MT::WEATHER_MASTER_SET).u8(pid).build();
+                cp::net::OutboundMsg out;
+                out.target = 0xFF;
+                out.frame  = std::move(frame);
+                netThread.outTcp.push(std::move(out));
+            }
+            break;
+        }
+
+        case MT::WEATHER_STATE: {
+            weatherSync.onTcpMessage(msg.payload.data(), msg.payload.size());
+            if (session.isHost()) {
+                cp::net::OutboundMsg relay;
+                relay.target = 0xFF;
+                relay.frame.resize(5 + msg.payload.size());
+                relay.frame[0] = msg.type;
+                uint32_t plen = static_cast<uint32_t>(msg.payload.size());
+                relay.frame[1] = plen & 0xFF;
+                relay.frame[2] = (plen >> 8) & 0xFF;
+                relay.frame[3] = (plen >> 16) & 0xFF;
+                relay.frame[4] = (plen >> 24) & 0xFF;
+                std::copy(msg.payload.begin(), msg.payload.end(), relay.frame.begin() + 5);
+                netThread.outTcp.push(std::move(relay));
+            }
+            break;
+        }
+
         case MT::KICK: {
             cp::ParticipantId pid = r.u8();
             if (pid == session.myId()) {
-                // We were kicked
                 onDisconnect();
                 connWin.setState(cp::ui::ConnState::CONNECT_ERROR, "You were kicked from the session.");
             }
@@ -393,7 +397,7 @@ struct CoPilotsPlugin {
         }
 
         case MT::HEARTBEAT:
-            break; // nothing to do
+            break;
 
         default:
             LogWarning("Unhandled TCP message type 0x%02X", msg.type);
@@ -401,7 +405,6 @@ struct CoPilotsPlugin {
         }
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────
     void broadcastAuthorityMap()
     {
         auto map = session.buildAuthorityMap();
@@ -448,35 +451,30 @@ struct CoPilotsPlugin {
         netThread.outTcp.push(std::move(out));
     }
 
-    // ── Session actions ───────────────────────────────────────────────────
     void onHost(const cp::ui::ConnectionConfig& cfg)
     {
         onDisconnect();
         connWin.setState(cp::ui::ConnState::CONNECTING);
 
-        // Load aircraft config
         char aircraftPath[512]; char aircraftFile[256];
         XPLMGetNthAircraftModel(0, aircraftFile, aircraftPath);
         std::string dir = aircraftPath;
-        // Strip filename from path
         size_t sep = dir.find_last_of("/\\");
         if (sep != std::string::npos) dir = dir.substr(0, sep);
         config.load(dir);
         connWin.setData(&session, &config.get());
 
-        // Build registry
         registry.build(config.get().datarefs, config.get().commands);
         syncEngine.init(&registry, &session);
         physicsSync.init(&session, &netThread);
+        weatherSync.init(&session, &netThread);
 
-        // Add ourselves as first participant
         session.setIsHost(true);
         cp::ParticipantId myId = session.addParticipant(cfg.nick);
         session.setMyId(myId);
 
         netThread.startServer(cfg.port, static_cast<uint16_t>(cfg.port + 1));
 
-        // Resolve local IP to show the crew what address to connect to
         std::string localIp = "127.0.0.1";
         {
             char hostname[256] = {};
@@ -505,7 +503,6 @@ struct CoPilotsPlugin {
         onDisconnect();
         connWin.setState(cp::ui::ConnState::CONNECTING);
 
-        // Load aircraft config (same aircraft assumed)
         char aircraftPath[512]; char aircraftFile[256];
         XPLMGetNthAircraftModel(0, aircraftFile, aircraftPath);
         std::string dir = aircraftPath;
@@ -516,12 +513,10 @@ struct CoPilotsPlugin {
         registry.build(config.get().datarefs, config.get().commands);
         syncEngine.init(&registry, &session);
         physicsSync.init(&session, &netThread);
+        weatherSync.init(&session, &netThread);
 
         netThread.startClient(cfg.host, cfg.port, static_cast<uint16_t>(cfg.port + 1));
 
-        // Send HELLO once connected
-        // (we schedule a small check in the flight loop; connection can take a tick)
-        // For now, send immediately — NetThread queues until connection is ready.
         auto frame = cp::proto::MsgBuilder(cp::proto::MsgType::HELLO)
                      .u8(cp::proto::PROTOCOL_VERSION)
                      .str(cfg.nick).build();
@@ -538,15 +533,14 @@ struct CoPilotsPlugin {
         session.clear();
         syncEngine.reset();
         physicsSync.reset();
+        weatherSync.reset();
         registry.clear();
         config.reset();
         connWin.setState(cp::ui::ConnState::IDLE);
     }
 
-    // ── Aircraft load/unload via XPluginReceiveMessage ────────────────────
     void onAircraftLoaded()
     {
-        // If session is active, rebuild the registry for the new aircraft
         if (netThread.connected) {
             char path[512]; char file[256];
             XPLMGetNthAircraftModel(0, file, path);
@@ -559,7 +553,6 @@ struct CoPilotsPlugin {
         }
     }
 
-    // ── Menu ──────────────────────────────────────────────────────────────
     void onMenuClick(int item)
     {
         if (item == 0)
@@ -569,10 +562,8 @@ struct CoPilotsPlugin {
     }
 };
 
-// ── Global plugin instance ────────────────────────────────────────────────
 static CoPilotsPlugin* g_plugin = nullptr;
 
-// ── X-Plane plugin exports ────────────────────────────────────────────────
 PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc)
 {
     strncpy(outName, "CoPilots",         64);
@@ -581,7 +572,6 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc)
 
     g_plugin = new CoPilotsPlugin();
 
-    // Build menu
     XPLMMenuID pluginsMenu = XPLMFindPluginsMenu();
     g_plugin->menuItem = XPLMAppendMenuItem(pluginsMenu, "CoPilots", nullptr, 1);
     g_plugin->menuId = XPLMCreateMenu("CoPilots", pluginsMenu, g_plugin->menuItem,
@@ -618,9 +608,8 @@ PLUGIN_API void XPluginDisable()
     if (g_plugin) g_plugin->onDisablePlugin();
 }
 
-PLUGIN_API void XPluginReceiveMessage(XPLMPluginID /*from*/, long msg, void* /*param*/)
+PLUGIN_API void XPluginReceiveMessage(XPLMPluginID , long msg, void* )
 {
     if (!g_plugin) return;
-    // XPLM_MSG_PLANE_LOADED = 203
     if (msg == 203) g_plugin->onAircraftLoaded();
 }

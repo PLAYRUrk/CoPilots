@@ -11,7 +11,6 @@ static std::mutex s_logMutex;
 static void write(const char* level, const char* fmt, va_list args)
 {
     char buf[2048];
-    // Format message
     char msg[1920];
     vsnprintf(msg, sizeof(msg), fmt, args);
     snprintf(buf, sizeof(buf), "[CoPilots]%s %s\n", level, msg);
@@ -44,4 +43,4 @@ void LogError(const char* fmt, ...)
     va_end(args);
 }
 
-} // namespace cp
+}

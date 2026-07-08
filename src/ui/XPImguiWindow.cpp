@@ -23,8 +23,6 @@ namespace ui {
 
 XPImguiWindow::~XPImguiWindow() { xpwShutdown(); }
 
-// ── Init / Shutdown ───────────────────────────────────────────────────────────
-
 bool XPImguiWindow::xpwInit(int l, int t, int r, int b,
                              XPLMWindowDecoration dec,
                              XPLMWindowLayer layer)
@@ -86,8 +84,6 @@ void XPImguiWindow::xpwSetVisible(bool v)
     if (xpWin_) XPLMSetWindowIsVisible(xpWin_, v ? 1 : 0);
 }
 
-// ── Helpers for subclasses ────────────────────────────────────────────────────
-
 bool XPImguiWindow::xpwBeginWindow(const char* title, ImGuiWindowFlags extraFlags)
 {
     ImGuiWindowFlags flags =
@@ -104,8 +100,6 @@ void XPImguiWindow::xpwEndWindow()
     lastWindowSize_ = ImGui::GetWindowSize();
     ImGui::End();
 }
-
-// ── Draw ──────────────────────────────────────────────────────────────────────
 
 void XPImguiWindow::onDraw()
 {
@@ -134,20 +128,14 @@ void XPImguiWindow::onDraw()
     lastTime_ = now;
 
     ImGuiIO& io = ImGui::GetIO();
-    // Full-screen DisplaySize so glScissor coords match the framebuffer exactly.
     io.DisplaySize             = ImVec2(float(screenW), float(screenH));
     io.DisplayFramebufferScale = ImVec2(1.f, 1.f);
     io.DeltaTime               = (dt > 0.f && dt < 1.f) ? dt : (1.f / 60.f);
 
-    // Mouse position for hover detection (current cursor location).
-    // Button events come from onMouse via AddMouseButtonEvent (event queue).
-    // XP gives Y=0 at screen bottom; ImGui wants Y=0 at screen top.
     int mx, my;
     XPLMGetMouseLocationGlobal(&mx, &my);
     io.AddMousePosEvent(float(mx), float(screenH - my));
 
-    // Keyboard focus — only call XPLMTakeKeyboardFocus on transitions to avoid
-    // spurious KeyCB notifications every frame.
     bool wantKb = io.WantCaptureKeyboard;
     if (wantKb != hasKbFocus_) {
         if (wantKb) XPLMTakeKeyboardFocus(xpWin_);
@@ -155,7 +143,6 @@ void XPImguiWindow::onDraw()
         hasKbFocus_ = wantKb;
     }
 
-    // ── Save GL state ────────────────────────────────────────────────────────
     GLint     vp[4];  glGetIntegerv(GL_VIEWPORT, vp);
     GLint     blendSrc, blendDst;
     glGetIntegerv(GL_BLEND_SRC, &blendSrc);
@@ -166,17 +153,12 @@ void XPImguiWindow::onDraw()
     GLboolean cullFace    = glIsEnabled(GL_CULL_FACE);
     GLint     scissorBox[4]; glGetIntegerv(GL_SCISSOR_BOX, scissorBox);
 
-    // Full-screen viewport: ImGui's internal glScissor calls use absolute
-    // framebuffer coords that match our DisplaySize.
     glViewport(0, 0, screenW, screenH);
     XPLMSetGraphicsState(0, 1, 0, 1, 1, 0, 0);
 
-    // ── ImGui frame ─────────────────────────────────────────────────────────
     ImGui_ImplOpenGL3_NewFrame();
     ImGui::NewFrame();
 
-    // Pin ImGui window to our XPLM window position.
-    // XP coords: xpT_ is top (high Y); ImGui: y = screenH - xpT_ (Y=0 at top).
     ImGui::SetNextWindowPos(
         ImVec2(float(xpL_), float(screenH - xpT_)),
         ImGuiCond_Always);
@@ -185,7 +167,6 @@ void XPImguiWindow::onDraw()
 
     titleBarH_ = ImGui::GetFrameHeight();
 
-    // Auto-resize XPLM window to match ImGui content (if subclass called xpwEndWindow)
     if (lastWindowSize_.x > 10.f && lastWindowSize_.y > 10.f) {
         int newR = xpL_ + (int)lastWindowSize_.x;
         int newB = xpT_  - (int)lastWindowSize_.y;
@@ -198,7 +179,6 @@ void XPImguiWindow::onDraw()
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
-    // ── Restore GL state ─────────────────────────────────────────────────────
     glViewport(vp[0], vp[1], vp[2], vp[3]);
     glBlendFunc(GLenum(blendSrc), GLenum(blendDst));
     if (blend)       glEnable(GL_BLEND);        else glDisable(GL_BLEND);
@@ -208,16 +188,12 @@ void XPImguiWindow::onDraw()
     glScissor(scissorBox[0], scissorBox[1], scissorBox[2], scissorBox[3]);
 }
 
-// ── Mouse ─────────────────────────────────────────────────────────────────────
-
 int XPImguiWindow::onMouse(int x, int y, XPLMMouseStatus status)
 {
     if (!imCtx_) return 0;
     ImGui::SetCurrentContext(imCtx_);
     ImGuiIO& io = ImGui::GetIO();
 
-    // Send position at the exact moment of the click, then the button event.
-    // Event queue preserves both events even if Down+Up arrive before the next draw.
     float imX = float(x);
     float imY = float(screenH_ - y);
     io.AddMousePosEvent(imX, imY);
@@ -225,9 +201,6 @@ int XPImguiWindow::onMouse(int x, int y, XPLMMouseStatus status)
     if (status == xplm_MouseDown) {
         io.AddMouseButtonEvent(0, true);
 
-        // Start XPLM-level drag when the click lands in the ImGui title bar.
-        // We intentionally do NOT check io.WantCaptureMouse: the title bar always
-        // belongs to the OS-level drag and never has interactive ImGui widgets.
         float winTop = float(screenH_ - xpT_);
         bool inTitleBar = (imY >= winTop && imY < winTop + titleBarH_);
         if (inTitleBar) {
@@ -254,9 +227,7 @@ int XPImguiWindow::onMouse(int x, int y, XPLMMouseStatus status)
     return 1;
 }
 
-// ── Scroll ────────────────────────────────────────────────────────────────────
-
-int XPImguiWindow::onScroll(int x, int y, int /*wheel*/, int clicks)
+int XPImguiWindow::onScroll(int x, int y, int , int clicks)
 {
     if (!imCtx_) return 0;
     ImGui::SetCurrentContext(imCtx_);
@@ -266,9 +237,7 @@ int XPImguiWindow::onScroll(int x, int y, int /*wheel*/, int clicks)
     return 1;
 }
 
-// ── Keyboard ──────────────────────────────────────────────────────────────────
-
-void XPImguiWindow::onKey(char key, XPLMKeyFlags flags, char vk, int /*losingFocus*/)
+void XPImguiWindow::onKey(char key, XPLMKeyFlags flags, char vk, int )
 {
     if (!imCtx_) return;
     ImGui::SetCurrentContext(imCtx_);
@@ -310,8 +279,6 @@ void XPImguiWindow::onKey(char key, XPLMKeyFlags flags, char vk, int /*losingFoc
         io.AddInputCharacter(static_cast<unsigned int>(static_cast<unsigned char>(key)));
 }
 
-// ── Static XPLM callbacks ─────────────────────────────────────────────────────
-
 void XPImguiWindow::DrawCB(XPLMWindowID, void* ref)
 {
     static_cast<XPImguiWindow*>(ref)->onDraw();
@@ -343,5 +310,5 @@ XPLMCursorStatus XPImguiWindow::CursorCB(XPLMWindowID, int, int, void*)
     return xplm_CursorDefault;
 }
 
-} // namespace ui
-} // namespace cp
+}
+}

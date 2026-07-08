@@ -42,7 +42,6 @@ bool Config::load(const std::string& aircraftDir)
 {
     reset();
 
-    // 1. Try copilots.json
     std::string jsonPath = aircraftDir + "/copilots.json";
     {
         std::ifstream f(jsonPath);
@@ -56,7 +55,6 @@ bool Config::load(const std::string& aircraftDir)
         }
     }
 
-    // 2. Fallback: smartcopilot.cfg
     std::string scPath = aircraftDir + "/smartcopilot.cfg";
     {
         std::ifstream f(scPath);
@@ -91,7 +89,6 @@ bool Config::loadJson(const std::string& path)
         cfg_.name = j.value("aircraft", "Unknown Aircraft");
         cfg_.port = j.value("port", 56900);
 
-        // Zones
         for (const auto& jz : j.value("zones", json::array())) {
             Zone z;
             z.id   = jz.at("id").get<std::string>();
@@ -99,7 +96,6 @@ bool Config::loadJson(const std::string& path)
             cfg_.zones.push_back(std::move(z));
         }
 
-        // Roles
         for (const auto& jr : j.value("roles", json::array())) {
             Role r;
             r.id   = jr.at("id").get<std::string>();
@@ -109,7 +105,6 @@ bool Config::loadJson(const std::string& path)
             cfg_.roles.push_back(std::move(r));
         }
 
-        // Datarefs
         for (const auto& jd : j.value("datarefs", json::array())) {
             DatarefEntry d;
             d.path   = jd.at("path").get<std::string>();
@@ -118,7 +113,6 @@ bool Config::loadJson(const std::string& path)
             cfg_.datarefs.push_back(std::move(d));
         }
 
-        // Commands
         for (const auto& jc : j.value("commands", json::array())) {
             CommandEntry c;
             c.path   = jc.at("path").get<std::string>();
@@ -133,4 +127,4 @@ bool Config::loadJson(const std::string& path)
     }
 }
 
-} // namespace cp
+}

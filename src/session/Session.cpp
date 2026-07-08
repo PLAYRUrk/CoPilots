@@ -9,6 +9,7 @@ void Session::clear()
     std::lock_guard<std::mutex> lk(mu_);
     participants_.clear();
     physicsMasterId_ = INVALID_PARTICIPANT_ID;
+    weatherMasterId_ = INVALID_PARTICIPANT_ID;
     myId_            = INVALID_PARTICIPANT_ID;
     isHost_          = false;
     nextId_          = 1;
@@ -20,9 +21,10 @@ ParticipantId Session::addParticipant(const std::string& nick)
     Participant p;
     p.id   = nextId_++;
     p.nick = nick;
-    // First participant becomes physics master by default
-    if (participants_.empty())
+    if (participants_.empty()) {
         physicsMasterId_ = p.id;
+        weatherMasterId_ = p.id;
+    }
     participants_.push_back(p);
     Log("Session: added participant %u '%s'", p.id, nick.c_str());
     notifyChanged();
@@ -39,8 +41,10 @@ void Session::removeParticipant(ParticipantId id)
     participants_.erase(it);
     if (physicsMasterId_ == id)
         physicsMasterId_ = participants_.empty()
-                           ? INVALID_PARTICIPANT_ID
-                           : participants_[0].id;
+                           ? INVALID_PARTICIPANT_ID : participants_[0].id;
+    if (weatherMasterId_ == id)
+        weatherMasterId_ = participants_.empty()
+                           ? INVALID_PARTICIPANT_ID : participants_[0].id;
     notifyChanged();
 }
 
@@ -54,7 +58,6 @@ bool Session::setRole(ParticipantId id, const std::string& roleId,
     p->roleId = roleId;
     p->zoneIds.clear();
 
-    // Populate zones from role definition
     for (const auto& r : availableRoles) {
         if (r.id == roleId) {
             p->zoneIds = r.zoneIds;
@@ -84,6 +87,16 @@ void Session::setPhysicsMaster(ParticipantId id)
     for (auto& p : participants_)
         p.isPhysicsMaster = (p.id == id);
     Log("Session: physics master → participant %u", id);
+    notifyChanged();
+}
+
+void Session::setWeatherMaster(ParticipantId id)
+{
+    std::lock_guard<std::mutex> lk(mu_);
+    weatherMasterId_ = id;
+    for (auto& p : participants_)
+        p.isWeatherMaster = (p.id == id);
+    Log("Session: weather master → participant %u", id);
     notifyChanged();
 }
 
@@ -122,9 +135,7 @@ AuthorityMap Session::buildAuthorityMap() const
 void Session::updateFromAuthorityMap(const AuthorityMap& map)
 {
     std::lock_guard<std::mutex> lk(mu_);
-    // Reset all zone assignments
     for (auto& p : participants_) p.zoneIds.clear();
-    // Apply map
     for (const auto& [zone, pid] : map) {
         Participant* p = findMut(pid);
         if (p) p->zoneIds.push_back(zone);
@@ -144,4 +155,4 @@ void Session::notifyChanged()
     if (onChanged) onChanged();
 }
 
-} // namespace cp
+}

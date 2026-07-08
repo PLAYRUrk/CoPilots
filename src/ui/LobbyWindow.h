@@ -18,7 +18,6 @@ public:
     bool init();
     void shutdown() { xpwShutdown(); }
 
-    // Update live data pointers (called after config load and session changes)
     void setData(const Session* s, const AircraftConfig* c) { sess_ = s; cfg_ = c; }
 
     void setVisible(bool v) { xpwSetVisible(v); }
@@ -32,5 +31,5 @@ private:
     const AircraftConfig* cfg_  = nullptr;
 };
 
-} // namespace ui
-} // namespace cp
+}
+}

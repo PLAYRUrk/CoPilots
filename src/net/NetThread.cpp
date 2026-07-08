@@ -55,8 +55,6 @@ void NetThread::stop()
     connected = false;
 }
 
-// ── Server loop ───────────────────────────────────────────────────────────
-
 void NetThread::serverLoop(uint16_t tcpPort, uint16_t udpPort)
 {
     running = true;
@@ -78,9 +76,8 @@ void NetThread::serverLoop(uint16_t tcpPort, uint16_t udpPort)
         return;
     }
 
-    connected = true; // server is "connected" once ports are open
+    connected = true;
 
-    // Client connections
     std::vector<ClientConn> clients;
     uint8_t nextId = 1;
 
@@ -90,7 +87,6 @@ void NetThread::serverLoop(uint16_t tcpPort, uint16_t udpPort)
     uint64_t lastHb = NowMs();
 
     while (!stopFlag_) {
-        // ── select() on all sockets ────────────────────────────────────────
         fd_set rset;
         FD_ZERO(&rset);
         FD_SET(listener, &rset);
@@ -100,10 +96,9 @@ void NetThread::serverLoop(uint16_t tcpPort, uint16_t udpPort)
             FD_SET(c.sock, &rset);
             if (static_cast<int>(c.sock) > maxfd) maxfd = static_cast<int>(c.sock);
         }
-        timeval tv{0, 10000}; // 10 ms
+        timeval tv{0, 10000};
         select(maxfd+1, &rset, nullptr, nullptr, &tv);
 
-        // ── Accept new TCP connections ────────────────────────────────────
         if (FD_ISSET(listener, &rset)) {
             SocketHandle cs = TcpAccept(listener);
             if (cs != INVALID_SOCK) {
@@ -115,7 +110,6 @@ void NetThread::serverLoop(uint16_t tcpPort, uint16_t udpPort)
             }
         }
 
-        // ── Receive UDP ────────────────────────────────────────────────────
         if (FD_ISSET(udpSock, &rset)) {
             UdpEndpoint from;
             int n = UdpRecvFrom(udpSock, udpBuf, sizeof(udpBuf), from);
@@ -125,14 +119,9 @@ void NetThread::serverLoop(uint16_t tcpPort, uint16_t udpPort)
                 dg.from = from;
                 inUdp.push(std::move(dg));
 
-                // Update client UDP endpoint mapping (first byte = participant_id)
                 if (n >= 1) {
-                    // For PHYSICS_STATE type 0x01, try to match by sender id in packet
-                    // For PING type 0x03, same — second byte is seq, no id
-                    // We just store last-seen endpoint per source IP:port
                     for (auto& c : clients) {
                         if (c.udpEp.ip.empty()) {
-                            // associate by IP matching (assumption: one client per IP for now)
                             c.udpEp = from;
                         }
                     }
@@ -140,7 +129,6 @@ void NetThread::serverLoop(uint16_t tcpPort, uint16_t udpPort)
             }
         }
 
-        // ── Receive TCP from each client ───────────────────────────────────
         std::vector<size_t> toRemove;
         for (size_t i = 0; i < clients.size(); ++i) {
             auto& c = clients[i];
@@ -148,10 +136,9 @@ void NetThread::serverLoop(uint16_t tcpPort, uint16_t udpPort)
             int n = TcpRecv(c.sock, tcpBuf, sizeof(tcpBuf));
             if (n == 0 || n == -2) {
                 Log("NetThread(server): client %u disconnected", c.id);
-                // Notify main thread
                 InboundMsg disc;
                 disc.sender = c.id;
-                disc.type   = 0xFE; // internal: disconnect
+                disc.type   = 0xFE;
                 inTcp.push(std::move(disc));
                 CloseSocket(c.sock);
                 toRemove.push_back(i);
@@ -167,15 +154,12 @@ void NetThread::serverLoop(uint16_t tcpPort, uint16_t udpPort)
                     });
             }
         }
-        // Remove disconnected (reverse order)
         for (int ri = static_cast<int>(toRemove.size())-1; ri >= 0; --ri)
             clients.erase(clients.begin() + toRemove[ri]);
 
-        // ── Send outbound TCP ──────────────────────────────────────────────
         OutboundMsg out;
         while (outTcp.pop(out)) {
             if (out.target == 0xFF) {
-                // Broadcast
                 for (auto& c : clients)
                     TcpSendAll(c.sock, out.frame.data(), out.frame.size());
             } else {
@@ -186,24 +170,20 @@ void NetThread::serverLoop(uint16_t tcpPort, uint16_t udpPort)
             }
         }
 
-        // ── Send outbound UDP ──────────────────────────────────────────────
         UdpDatagram dg;
         while (outUdp.pop(dg)) {
             UdpSendTo(udpSock, dg.data.data(), dg.data.size(), dg.to);
         }
 
-        // ── Heartbeat ─────────────────────────────────────────────────────
         uint64_t now = NowMs();
         if (now - lastHb > 1000) {
             lastHb = now;
-            // Build heartbeat frame: type=0xF0, payload_len=0
             uint8_t hb[5] = {0xF0, 0,0,0,0};
             for (auto& c : clients)
                 TcpSendAll(c.sock, hb, sizeof(hb));
         }
     }
 
-    // Cleanup
     for (auto& c : clients) CloseSocket(c.sock);
     CloseSocket(listener);
     CloseSocket(udpSock);
@@ -211,8 +191,6 @@ void NetThread::serverLoop(uint16_t tcpPort, uint16_t udpPort)
     running   = false;
     Log("NetThread(server): stopped");
 }
-
-// ── Client loop ───────────────────────────────────────────────────────────
 
 void NetThread::clientLoop(const std::string& host, uint16_t tcpPort, uint16_t udpPort)
 {
@@ -227,8 +205,7 @@ void NetThread::clientLoop(const std::string& host, uint16_t tcpPort, uint16_t u
         return;
     }
 
-    // UDP: bind any local port; we'll send to server's UDP port
-    SocketHandle udpSock = UdpBind(0); // port 0 = OS assigns
+    SocketHandle udpSock = UdpBind(0);
     UdpEndpoint serverUdp{host, udpPort};
 
     connected = true;
@@ -251,7 +228,6 @@ void NetThread::clientLoop(const std::string& host, uint16_t tcpPort, uint16_t u
         timeval tv{0, 10000};
         select(maxfd+1, &rset, nullptr, nullptr, &tv);
 
-        // TCP receive
         if (FD_ISSET(tcpSock, &rset)) {
             int n = TcpRecv(tcpSock, tcpBuf, sizeof(tcpBuf));
             if (n == 0 || n == -2) {
@@ -265,7 +241,7 @@ void NetThread::clientLoop(const std::string& host, uint16_t tcpPort, uint16_t u
                 framer.feed(tcpBuf, static_cast<size_t>(n),
                     [&](uint8_t type, const uint8_t* payload, uint32_t plen) {
                         InboundMsg msg;
-                        msg.sender = 0; // from server
+                        msg.sender = 0;
                         msg.type   = type;
                         msg.payload.assign(payload, payload+plen);
                         inTcp.push(std::move(msg));
@@ -273,7 +249,6 @@ void NetThread::clientLoop(const std::string& host, uint16_t tcpPort, uint16_t u
             }
         }
 
-        // UDP receive
         if (udpSock != INVALID_SOCK && FD_ISSET(udpSock, &rset)) {
             UdpEndpoint from;
             int n = UdpRecvFrom(udpSock, udpBuf, sizeof(udpBuf), from);
@@ -285,19 +260,16 @@ void NetThread::clientLoop(const std::string& host, uint16_t tcpPort, uint16_t u
             }
         }
 
-        // TCP send
         OutboundMsg out;
         while (outTcp.pop(out)) {
             TcpSendAll(tcpSock, out.frame.data(), out.frame.size());
         }
 
-        // UDP send
         UdpDatagram dg;
         while (outUdp.pop(dg)) {
             UdpSendTo(udpSock, dg.data.data(), dg.data.size(), serverUdp);
         }
 
-        // Heartbeat
         uint64_t now = NowMs();
         if (now - lastHb > 1000) {
             lastHb = now;
@@ -313,5 +285,5 @@ void NetThread::clientLoop(const std::string& host, uint16_t tcpPort, uint16_t u
     Log("NetThread(client): stopped");
 }
 
-} // namespace net
-} // namespace cp
+}
+}

@@ -17,24 +17,20 @@ struct ConnectionConfig {
     bool        asHost = true;
 };
 
-// Avoid ERROR -- Windows.h defines it as a macro
 enum class ConnState { IDLE, CONNECTING, CONNECTED, CONNECT_ERROR };
 
-// Single main window: shows Host/Join form when disconnected,
-// switches to lobby view when connected as host (or simple disconnect when client).
 class ConnectionWindow : public XPImguiWindow {
 public:
-    // Connection callbacks
     std::function<void(const ConnectionConfig&)> onHost;
     std::function<void(const ConnectionConfig&)> onJoin;
     std::function<void()>                        onDisconnect;
 
-    // Lobby / admin callbacks (active when isHost_ && CONNECTED)
     std::function<void()>                                               onStopHosting;
     std::function<void(ParticipantId, const std::string&)>              onRoleAssign;
     std::function<void(ParticipantId, const std::vector<std::string>&)> onZoneAssign;
     std::function<void(ParticipantId)>                                  onKick;
     std::function<void(ParticipantId)>                                  onPhysicsMasterSet;
+    std::function<void(ParticipantId)>                                  onWeatherMasterSet;
 
     bool init();
     void shutdown() { xpwShutdown(); }
@@ -47,7 +43,6 @@ public:
     { localIp_ = ip; localPort_ = port; }
     void setIsHost(bool h) { isHost_ = h; }
 
-    // Live session & aircraft config data (for lobby view)
     void setData(const Session* s, const AircraftConfig* c) { sess_ = s; aircraftCfg_ = c; }
 
 protected:
@@ -74,5 +69,5 @@ private:
     void renderLobbyTable();
 };
 
-} // namespace ui
-} // namespace cp
+}
+}

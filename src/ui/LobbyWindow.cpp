@@ -23,7 +23,6 @@ bool LobbyWindow::init()
 
 void LobbyWindow::renderContent()
 {
-    // Only draw content when we are the host and have live data
     if (!sess_ || !cfg_ || !sess_->isHost()) {
         ImGui::Begin("CoPilots -- Lobby (Admin)", nullptr,
             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
@@ -37,7 +36,6 @@ void LobbyWindow::renderContent()
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoBringToFrontOnFocus);
 
-    // Prominent Stop Hosting button at the top
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.70f,0.10f,0.10f,1.f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.90f,0.20f,0.20f,1.f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.55f,0.05f,0.05f,1.f));
@@ -162,5 +160,5 @@ void LobbyWindow::renderContent()
     ImGui::End();
 }
 
-} // namespace ui
-} // namespace cp
+}
+}
