@@ -2,6 +2,7 @@
 
 #include "../config/Zone.h"
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -26,12 +27,14 @@ struct RegisteredCommand {
     std::string path;
     std::string zoneId;
     void*       handle = nullptr;
+    std::function<void(uint16_t)> cb;
 };
 
 class DatarefRegistry {
 public:
     void build(const std::vector<DatarefEntry>& drEntries,
-               const std::vector<CommandEntry>& cmdEntries);
+               const std::vector<CommandEntry>& cmdEntries,
+               std::function<void(uint16_t)> onCommandFired = {});
 
     const RegisteredDataref* getDr(uint16_t index) const;
     const RegisteredCommand* getCmd(uint16_t index) const;

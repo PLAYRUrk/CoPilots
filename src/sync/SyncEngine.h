@@ -60,6 +60,7 @@ private:
     };
     std::vector<Cache> cache_;
     std::vector<bool>  cmdPending_;
+    std::vector<bool>  cmdEchoSuppressed_;
 
     DrValue readDr(const RegisteredDataref& rd) const;
     void    writeDr(const RegisteredDataref& rd, const DrValue& val);

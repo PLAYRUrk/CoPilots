@@ -5,20 +5,30 @@
 
 namespace cp {
 
+static int cmdHandlerCb(XPLMCommandRef, XPLMCommandPhase phase, void* refcon)
+{
+    if (phase == xplm_CommandBegin) {
+        auto* rc = static_cast<RegisteredCommand*>(refcon);
+        if (rc->cb) rc->cb(rc->index);
+    }
+    return 1; // pass through — don't consume the command
+}
+
 static DrType resolveType(XPLMDataRef handle)
 {
     XPLMDataTypeID types = XPLMGetDataRefTypes(handle);
-    if (types & xplmType_Double)   return DrType::DOUBLE;
+    if (types & xplmType_Double)     return DrType::DOUBLE;
     if (types & xplmType_FloatArray) return DrType::FLOAT_ARR;
     if (types & xplmType_IntArray)   return DrType::INT_ARR;
+    if (types & xplmType_Float)      return DrType::FLOAT;
+    if (types & xplmType_Int)        return DrType::INT;
     if (types & xplmType_Data)       return DrType::DATA;
-    if (types & xplmType_Float)    return DrType::FLOAT;
-    if (types & xplmType_Int)      return DrType::INT;
     return DrType::UNKNOWN;
 }
 
 void DatarefRegistry::build(const std::vector<DatarefEntry>& drEntries,
-                             const std::vector<CommandEntry>& cmdEntries)
+                             const std::vector<CommandEntry>& cmdEntries,
+                             std::function<void(uint16_t)> onCommandFired)
 {
     clear();
 
@@ -40,6 +50,9 @@ void DatarefRegistry::build(const std::vector<DatarefEntry>& drEntries,
     }
     Log("DatarefRegistry: registered %zu datarefs", datarefs_.size());
 
+    // Reserve so that push_back never reallocates — pointers to elements are
+    // passed as refcon to XPLMRegisterCommandHandler and must remain stable.
+    commands_.reserve(cmdEntries.size());
     for (size_t i = 0; i < cmdEntries.size(); ++i) {
         const auto& e = cmdEntries[i];
         RegisteredCommand rc;
@@ -47,9 +60,17 @@ void DatarefRegistry::build(const std::vector<DatarefEntry>& drEntries,
         rc.path   = e.path;
         rc.zoneId = e.zoneId;
         rc.handle = XPLMFindCommand(e.path.c_str());
-        if (!rc.handle)
+        if (!rc.handle) {
             LogWarning("DatarefRegistry: command not found: %s", e.path.c_str());
+        } else if (onCommandFired) {
+            rc.cb = onCommandFired;
+        }
         commands_.push_back(std::move(rc));
+        if (commands_.back().handle && commands_.back().cb) {
+            XPLMRegisterCommandHandler(
+                static_cast<XPLMCommandRef>(commands_.back().handle),
+                cmdHandlerCb, 1 /* before */, &commands_.back());
+        }
     }
     Log("DatarefRegistry: registered %zu commands", commands_.size());
 }
@@ -68,6 +89,13 @@ const RegisteredCommand* DatarefRegistry::getCmd(uint16_t index) const
 
 void DatarefRegistry::clear()
 {
+    for (auto& rc : commands_) {
+        if (rc.handle && rc.cb) {
+            XPLMUnregisterCommandHandler(
+                static_cast<XPLMCommandRef>(rc.handle),
+                cmdHandlerCb, 1, &rc);
+        }
+    }
     datarefs_.clear();
     commands_.clear();
 }

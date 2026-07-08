@@ -229,11 +229,21 @@ void SyncEngine::applyIncomingCommand(uint16_t cmdIndex, uint8_t senderParticipa
     if (auth != senderParticipantId && auth != INVALID_PARTICIPANT_ID) return;
     if (senderParticipantId == session_->myId()) return;
 
+    // Suppress the echo: XPLMCommandOnce triggers our registered handler
+    // synchronously, which would re-queue the command for re-sending.
+    if (cmdEchoSuppressed_.size() <= cmdIndex)
+        cmdEchoSuppressed_.resize(cmdIndex + 1, false);
+    cmdEchoSuppressed_[cmdIndex] = true;
+
     XPLMCommandOnce(static_cast<XPLMCommandRef>(rc->handle));
 }
 
 void SyncEngine::notifyCommandFired(uint16_t cmdIndex)
 {
+    if (cmdEchoSuppressed_.size() > cmdIndex && cmdEchoSuppressed_[cmdIndex]) {
+        cmdEchoSuppressed_[cmdIndex] = false;
+        return;
+    }
     if (cmdPending_.size() <= cmdIndex)
         cmdPending_.resize(cmdIndex+1, false);
     cmdPending_[cmdIndex] = true;

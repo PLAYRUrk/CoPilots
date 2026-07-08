@@ -39,7 +39,8 @@ bool SmartCopilotCompat::parse(const std::string& filePath, AircraftConfig& out)
     defaultRole.zoneIds.push_back("SHARED");
     out.roles.push_back(defaultRole);
 
-    enum class Section { NONE, CONTINUED, CLICKS, OVERRIDE } section = Section::NONE;
+    // CONTINUED → CONTINUOUS datarefs; ONCHANGE → ONCHANGE datarefs; COMMAND → commands
+    enum class Section { NONE, CONTINUED, ONCHANGE, COMMAND } section = Section::NONE;
 
     std::string line;
     int lineNo = 0;
@@ -51,10 +52,16 @@ bool SmartCopilotCompat::parse(const std::string& filePath, AircraftConfig& out)
         if (line.empty() || line[0] == '#' || line[0] == ';') continue;
 
         std::string lower = toLower(line);
-        if (lower == "[continued]")  { section = Section::CONTINUED; continue; }
-        if (lower == "[clicks]")     { section = Section::CLICKS;     continue; }
-        if (lower == "[override]")   { section = Section::OVERRIDE;   continue; }
-        if (line[0] == '[')          { section = Section::NONE;       continue; }
+        if (lower == "[continued]")   { section = Section::CONTINUED; continue; }
+        if (lower == "[triggers]")    { section = Section::ONCHANGE;  continue; }
+        if (lower == "[send_back]")   { section = Section::ONCHANGE;  continue; }
+        if (lower == "[override]")    { section = Section::ONCHANGE;  continue; }
+        if (lower == "[slow]")        { section = Section::ONCHANGE;  continue; }
+        if (lower == "[transponder]") { section = Section::ONCHANGE;  continue; }
+        if (lower == "[weather]")     { section = Section::ONCHANGE;  continue; }
+        if (lower == "[clicks]")      { section = Section::COMMAND;   continue; }
+        if (lower == "[commands]")    { section = Section::COMMAND;   continue; }
+        if (line[0] == '[')           { section = Section::NONE;      continue; }
 
         if (section == Section::NONE) continue;
 
@@ -65,7 +72,7 @@ bool SmartCopilotCompat::parse(const std::string& filePath, AircraftConfig& out)
         }
         if (path.empty()) continue;
 
-        if (section == Section::CLICKS) {
+        if (section == Section::COMMAND) {
             CommandEntry cmd;
             cmd.path   = path;
             cmd.zoneId = "SHARED";
@@ -73,12 +80,12 @@ bool SmartCopilotCompat::parse(const std::string& filePath, AircraftConfig& out)
             for (const auto& c : out.commands)
                 if (c.path == path) { dup = true; break; }
             if (!dup) out.commands.push_back(std::move(cmd));
-        } else if (section == Section::CONTINUED || section == Section::OVERRIDE) {
+        } else {
             DatarefEntry dr;
             dr.path   = path;
             dr.zoneId = "SHARED";
             dr.mode   = (section == Section::CONTINUED) ? SyncMode::CONTINUOUS
-                                                         : SyncMode::ONCHANGE;
+                                                        : SyncMode::ONCHANGE;
             bool dup = false;
             for (const auto& d : out.datarefs)
                 if (d.path == path) { dup = true; break; }

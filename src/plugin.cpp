@@ -358,6 +358,12 @@ struct CoPilotsPlugin {
                     for (auto& x : val.fa) x = r.f32();
                     break;
                 }
+                case cp::DrType::DATA: {
+                    uint16_t n = r.u16();
+                    val.ba.resize(n);
+                    for (auto& x : val.ba) x = r.u8();
+                    break;
+                }
                 default: break;
             }
             // Translate TCP connection ID → participant ID for authority check
@@ -524,6 +530,10 @@ struct CoPilotsPlugin {
                 b.u16(static_cast<uint16_t>(val.fa.size()));
                 for (float x : val.fa) b.f32(x);
                 break;
+            case cp::DrType::DATA:
+                b.u16(static_cast<uint16_t>(val.ba.size()));
+                for (uint8_t x : val.ba) b.u8(x);
+                break;
             default: break;
         }
         cp::net::OutboundMsg out;
@@ -554,7 +564,8 @@ struct CoPilotsPlugin {
         config.load(dir);
         connWin.setData(&session, &config.get());
 
-        registry.build(config.get().datarefs, config.get().commands);
+        registry.build(config.get().datarefs, config.get().commands,
+                       [this](uint16_t idx) { syncEngine.notifyCommandFired(idx); });
         syncEngine.init(&registry, &session);
         syncEngine.setSmartCopilotMode(config.get().fromSmartCopilot);
         physicsSync.init(&session, &netThread);
@@ -608,7 +619,8 @@ struct CoPilotsPlugin {
         if (sep != std::string::npos) dir = dir.substr(0, sep);
         config.load(dir);
 
-        registry.build(config.get().datarefs, config.get().commands);
+        registry.build(config.get().datarefs, config.get().commands,
+                       [this](uint16_t idx) { syncEngine.notifyCommandFired(idx); });
         syncEngine.init(&registry, &session);
         syncEngine.setSmartCopilotMode(config.get().fromSmartCopilot);
         physicsSync.init(&session, &netThread);
@@ -649,7 +661,8 @@ struct CoPilotsPlugin {
             size_t sep = dir.find_last_of("/\\");
             if (sep != std::string::npos) dir = dir.substr(0, sep);
             config.load(dir);
-            registry.build(config.get().datarefs, config.get().commands);
+            registry.build(config.get().datarefs, config.get().commands,
+                           [this](uint16_t idx) { syncEngine.notifyCommandFired(idx); });
             syncEngine.reset();
         }
     }
