@@ -114,3 +114,11 @@ A small overlay appears in the bottom-right corner showing your role, zones, pin
 |---|---|
 | TCP (lobby + state) | 56900 |
 | UDP (physics) | 56901 |
+
+---
+
+## License
+
+Copyright (c) 2026 Egor Lebedev. All Rights Reserved.
+
+This software is proprietary. No permission is granted to use, copy, modify, or distribute it without explicit written consent from the author. See [LICENSE](LICENSE) for details.
