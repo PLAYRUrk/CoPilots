@@ -119,6 +119,6 @@ A small overlay appears in the bottom-right corner showing your role, zones, pin
 
 ## License
 
-Copyright (c) 2026 Egor Lebedev. All Rights Reserved.
+Copyright (c) 2026 Egor Beletsky. All Rights Reserved.
 
 This software is proprietary. No permission is granted to use, copy, modify, or distribute it without explicit written consent from the author. See [LICENSE](LICENSE) for details.
