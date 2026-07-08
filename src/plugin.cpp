@@ -541,7 +541,7 @@ struct CoPilotsPlugin {
         cp::ParticipantId myId = session.addParticipant(cfg.nick);
         session.setMyId(myId);
 
-        netThread.startServer(cfg.port, static_cast<uint16_t>(cfg.port + 1));
+        netThread.startServer(cfg.port, cfg.port);
 
         std::string localIp = "127.0.0.1";
         {
@@ -583,7 +583,7 @@ struct CoPilotsPlugin {
         physicsSync.init(&session, &netThread);
         weatherSync.init(&session, &netThread);
 
-        netThread.startClient(cfg.host, cfg.port, static_cast<uint16_t>(cfg.port + 1));
+        netThread.startClient(cfg.host, cfg.port, cfg.port);
 
         auto frame = cp::proto::MsgBuilder(cp::proto::MsgType::HELLO)
                      .u8(cp::proto::PROTOCOL_VERSION)

@@ -128,7 +128,8 @@ AuthorityMap Session::buildAuthorityMap() const
     AuthorityMap m;
     for (const auto& p : participants_)
         for (const auto& z : p.zoneIds)
-            m[z] = p.id;
+            if (!m.count(z))   // first participant in the list wins; no duplicate ownership
+                m[z] = p.id;
     return m;
 }
 
