@@ -1,6 +1,6 @@
 # CoPilots — Multi-Crew Shared Cockpit for X-Plane 11
 
-Fly a single cockpit with multiple people simultaneously. Each pilot controls only the zones assigned to them; everything else is read-only. The host manages crew assignments live from the lobby.
+Fly a single aircraft with multiple people simultaneously. One pilot has **flight control** at a time; all other crew members see the cockpit in real time and can control only the systems assigned to them. The host manages crew assignments live from the lobby.
 
 ---
 
@@ -55,15 +55,30 @@ plugins\
 
 ---
 
+## Flight controls and physics master
+
+Only **one pilot** controls the aircraft at a time — the **physics master**. By default this is the host. When someone has control:
+
+- Their hardware joystick and mouse yoke move the aircraft.
+- All other crew members' joystick and mouse input is **completely blocked** — neither hardware joystick nor mouse can affect the aircraft while someone else is flying.
+- The active pilot's control positions (yoke, rudder, throttle, reverser, flaps, brakes, etc.) are streamed to all clients at ~60 Hz over UDP.
+
+**Requesting control (client):** Click **Request Controls** in the plugin window. The host receives a notification and can Grant or Deny.
+
+**Transferring control (host):** In the lobby table, click **Phys** next to any participant to make them the physics master. You can also click **Take Controls** to reclaim control for yourself.
+
+---
+
 ## Aircraft configuration
 
-Place a `copilots.json` file in your aircraft's folder to define zones, roles, and which datarefs belong to which zone.
+CoPilots works **without any configuration file** — it automatically discovers and synchronises hundreds of cockpit datarefs from X-Plane's built-in `DataRefs.txt` (autopilot, switches, GPS, engine actuators, etc.). No per-aircraft setup is required.
+
+For finer control — custom zones, roles, and specific dataref assignments — place a `copilots.json` file in your aircraft's folder.
 
 **Example** (`copilots.example.json` is included in the `configs` folder):
 
 ```json
 {
-  "version": 1,
   "aircraft": "Boeing 737-800",
   "port": 56900,
   "zones": [
@@ -72,10 +87,10 @@ Place a `copilots.json` file in your aircraft's folder to define zones, roles, a
   ],
   "roles": [
     { "id": "captain", "name": "Captain (PF)", "zones": ["MCP"] },
-    { "id": "fo", "name": "First Officer (PM)", "zones": ["OVERHEAD"] }
+    { "id": "fo",      "name": "First Officer (PM)", "zones": ["OVERHEAD"] }
   ],
   "datarefs": [
-    { "path": "sim/cockpit/autopilot/heading_mag", "zone": "MCP", "type": "float", "mode": "continuous" }
+    { "path": "sim/cockpit/autopilot/heading_mag", "zone": "MCP", "mode": "onchange" }
   ],
   "commands": [
     { "path": "sim/autopilot/NAV", "zone": "MCP" }
@@ -84,10 +99,16 @@ Place a `copilots.json` file in your aircraft's folder to define zones, roles, a
 ```
 
 **Sync modes:**
-- `onchange` — sent when value changes (switches, buttons)
+- `onchange` — sent only when the value changes (switches, buttons)
 - `continuous` — sent every tick at ~20 Hz (knobs, analog values)
 
-**No config file?** CoPilots automatically falls back to `smartcopilot.cfg` if present. Basic sync works; zone and role features are unavailable.
+Datarefs listed in `copilots.json` are deduplicated against the auto-discovered set so there is no overlap.
+
+---
+
+## SmartCopilot compatibility
+
+If `copilots.json` is not present but `smartcopilot.cfg` is, CoPilots loads it automatically. All listed datarefs are synchronised with the **physics master as sole sender** — other crew members receive but cannot send cockpit state. Zone and role assignment are unavailable in this mode.
 
 ---
 
@@ -103,8 +124,11 @@ A small overlay appears in the bottom-right corner showing your role, zones, pin
 |---|---|
 | Plugin not in menu | Look for `[CoPilots]` lines in X-Plane's `Log.txt` |
 | Can't connect | Firewall — allow X-Plane on TCP/UDP 56900–56901. Confirm the host IP is reachable. |
-| Datarefs not syncing | Check `path` values in `copilots.json` match your aircraft's actual datarefs |
-| Physics jitter | High ping (>150 ms). Ask the host to reassign Physics Master to the lowest-latency pilot. |
+| Datarefs not syncing | Verify paths in `copilots.json` match your aircraft's actual datarefs. Check `Log.txt` for `SyncEngine::writeDr VERIFY FAILED`. |
+| Joystick not responding | Confirm you are the physics master (shown in the plugin window). If you just took control, wait one frame for `override_joystick` to clear. |
+| Config mismatch error on join | Host and client must load the same aircraft with the same `copilots.json` / `smartcopilot.cfg`. The `drListHash` values must match. |
+| Physics jitter | High ping (>150 ms). Ask the host to reassign the Physics Master role to the lowest-latency pilot. |
+| Auto-discovered datarefs missing | `DataRefs.txt` must be present at `X-Plane 11\Resources\plugins\DataRefs.txt`. Check `Log.txt` for `AutoDatarefSync` lines. |
 
 ---
 

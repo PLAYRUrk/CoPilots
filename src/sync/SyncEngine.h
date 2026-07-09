@@ -44,8 +44,9 @@ public:
     // Force all datarefs to be sent on the next tick (used when a new client joins)
     void requestFullSync() { fullSyncPending_ = true; }
 
-    // In SmartCopilot mode every participant sends their own changes and accepts
-    // changes from others (no single authority per zone, echo suppression only)
+    // In SmartCopilot mode only the physics master sends datarefs and only
+    // updates from the physics master are accepted. This prevents non-master
+    // control inputs (e.g. mouse yoke) from reaching the master via TCP.
     void setSmartCopilotMode(bool v) { smartCopilotMode_ = v; }
 
 private:
