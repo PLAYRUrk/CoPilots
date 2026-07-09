@@ -48,16 +48,20 @@ void PhysicsSync::tick()
     bool amMaster = session_->isPhysicsMaster();
 
     if (amMaster && !wasPhysicsMaster_) {
-        // Became physics master — clear joystick/planepath overrides so hardware input is restored.
-        XPLMDataRef joyOvr = XPLMFindDataRef("sim/operation/override/override_joystick");
-        if (joyOvr) { int z = 0; XPLMSetDatai(joyOvr, z); }
-        XPLMDataRef ovPath = XPLMFindDataRef("sim/operation/override/override_planepath");
-        if (ovPath) { int z = 0; XPLMSetDatavi(ovPath, &z, 0, 1); }
+        // Became physics master — discard state from the previous master.
         hasState_ = false;
     }
     wasPhysicsMaster_ = amMaster;
 
     if (amMaster) {
+        // Clear joystick/planepath overrides EVERY tick, not just on role transition.
+        // If anything external (auto-sync, SmartCopilot) re-enables override_joystick,
+        // this ensures the master's hardware input is restored within one flight loop frame.
+        XPLMDataRef joyOvr = XPLMFindDataRef("sim/operation/override/override_joystick");
+        if (joyOvr) { int z = 0; XPLMSetDatai(joyOvr, z); }
+        XPLMDataRef ovPath = XPLMFindDataRef("sim/operation/override/override_planepath");
+        if (ovPath) { int z = 0; XPLMSetDatavi(ovPath, &z, 0, 1); }
+
         sendState();
     } else if (hasState_) {
         applyState(latestState_);

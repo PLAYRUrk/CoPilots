@@ -141,15 +141,14 @@ void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
         if (!rd.handle) continue;
 
         // Zone ownership:
-        //   _AUTO zone   → only the physics master sends (covers auto-discovered datarefs)
-        //   SmartCopilot → every participant sends their own changes
+        //   _AUTO zone   → only the physics master sends (auto-discovered datarefs)
+        //   SmartCopilot → only the physics master sends; prevents non-master control
+        //                   inputs (e.g. mouse yoke) from reaching the master via TCP
         //   normal       → only the participant who owns the zone sends
         bool iOwn;
         bool isAutoZone = (rd.zoneId == AUTO_ZONE_ID);
-        if (isAutoZone)
+        if (isAutoZone || smartCopilotMode_)
             iOwn = session_->isPhysicsMaster();
-        else if (smartCopilotMode_)
-            iOwn = true;
         else
             iOwn = session_->iOwnZone(rd.zoneId);
         if (!iOwn) continue;
@@ -200,17 +199,14 @@ void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
     const RegisteredDataref* rd = reg_->getDr(drIndex);
     if (!rd || !rd->handle) return;
 
-    if (rd->zoneId == AUTO_ZONE_ID) {
-        // _AUTO zone: only accept from the current physics master.
-        // This prevents non-master clients from accidentally overriding the master's
-        // state (e.g., with stale values from before a master change).
+    if (rd->zoneId == AUTO_ZONE_ID || smartCopilotMode_) {
+        // _AUTO zone and SmartCopilot mode: only accept from the current physics master.
+        // This prevents non-master clients from overriding the master's state (e.g.,
+        // with stale values or control inputs like mouse yoke movements).
         if (senderParticipantId == session_->myId()) return;
         ParticipantId pm = session_->physicsMasterId();
         if (pm != INVALID_PARTICIPANT_ID && senderParticipantId != 0 &&
             senderParticipantId != pm) return;
-    } else if (smartCopilotMode_) {
-        // SmartCopilot mode: accept any change from another participant.
-        if (senderParticipantId != 0 && senderParticipantId == session_->myId()) return;
     } else {
         // Zone-authority mode: only apply if we don't own the zone.
         if (session_->iOwnZone(rd->zoneId)) return;

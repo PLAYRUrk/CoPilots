@@ -69,6 +69,17 @@ static bool parseAddr(const char* buf, std::string& outHost, uint16_t& outPort)
 
 void ConnectionWindow::renderContent()
 {
+    // Enforce a minimum window width so buttons like "Request Controls" never clip.
+    {
+        const ImGuiStyle& sty = ImGui::GetStyle();
+        float minW = ImGui::CalcTextSize("Request Controls").x
+                   + sty.FramePadding.x * 2.f
+                   + sty.WindowPadding.x * 2.f + 12.f;
+        if (minW < 280.f) minW = 280.f;
+        ImGui::SetNextWindowSizeConstraints(
+            ImVec2(minW, 0.f),
+            ImVec2(FLT_MAX, FLT_MAX));
+    }
     xpwBeginWindow("CoPilots");
 
     ImGui::TextColored(ImVec4(kAccentR, kAccentG, kAccentB, 1.f), "CoPilots");
@@ -353,6 +364,15 @@ void ConnectionWindow::renderLobbyTable()
     }
     ImGui::Spacing();
 
+    // Compute the Actions column width to fit all three SmallButtons at once.
+    const ImGuiStyle& tSty = ImGui::GetStyle();
+    float tPad2 = tSty.FramePadding.x * 2.f;
+    float tSpc  = tSty.ItemSpacing.x;
+    float actionsColW = ImGui::CalcTextSize("Phys").x + tPad2 + tSpc
+                      + ImGui::CalcTextSize("Wthr").x + tPad2 + tSpc
+                      + ImGui::CalcTextSize("Kick").x + tPad2
+                      + 8.f;
+
     if (ImGui::BeginTable("##pilots", 5,
             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
             ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_ScrollY,
@@ -363,7 +383,7 @@ void ConnectionWindow::renderLobbyTable()
         ImGui::TableSetupColumn("Nick",    ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn("Role",    ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn("Zones",   ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed,   120.f);
+        ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed,   actionsColW);
         ImGui::TableHeadersRow();
 
         for (const auto& p : sess_->participants()) {
