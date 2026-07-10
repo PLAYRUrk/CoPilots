@@ -842,6 +842,28 @@ struct CoPilotsPlugin {
             break;
         }
 
+        case MT::NP_TAB_DEL: {
+            using namespace cp::notepad;
+            NpId tabId = r.u32();
+            notepadWin.onTabDel(tabId);
+            if (session.isHost()) {
+                sharedNotepad_.tabs.erase(
+                    std::remove_if(sharedNotepad_.tabs.begin(), sharedNotepad_.tabs.end(),
+                                   [tabId](const Tab& t){ return t.id == tabId; }),
+                    sharedNotepad_.tabs.end());
+                cp::net::OutboundMsg relay;
+                relay.target = 0xFF;
+                relay.frame.resize(5 + msg.payload.size());
+                relay.frame[0] = msg.type;
+                uint32_t plen = static_cast<uint32_t>(msg.payload.size());
+                relay.frame[1]=plen&0xFF; relay.frame[2]=(plen>>8)&0xFF;
+                relay.frame[3]=(plen>>16)&0xFF; relay.frame[4]=(plen>>24)&0xFF;
+                std::copy(msg.payload.begin(), msg.payload.end(), relay.frame.begin()+5);
+                netThread.outTcp.push(std::move(relay));
+            }
+            break;
+        }
+
         case MT::NP_SNAP_REQ: {
             // Only the host answers snapshot requests.
             if (!session.isHost()) break;

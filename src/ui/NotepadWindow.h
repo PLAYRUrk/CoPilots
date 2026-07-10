@@ -44,6 +44,7 @@ public:
                      const cp::notepad::Stroke& stroke);
     void onSheetDel (cp::notepad::NpId tabId, cp::notepad::NpId sheetId);
     void onSheetParam(cp::notepad::NpId tabId, cp::notepad::NpId sheetId, float w, float h);
+    void onTabDel   (cp::notepad::NpId tabId);
 
     // Snapshot receive: called per-chunk (isFirstChunk=true resets the sheet).
     void onSnapSheet(cp::notepad::NpId tabId, const std::string& tabName,
@@ -70,6 +71,18 @@ private:
     // Per-participant monotonic counter (mints NpIds for tabs/sheets/strokes).
     uint32_t npCounter_ = 0;
 
+    // Desired window size tracked by the custom resize grip.
+    // Initialised lazily from the XPLM box on first draw.
+    float targetW_ = 0.f;
+    float targetH_ = 0.f;
+
+    // Custom resize-grip drag state (bottom-right corner handle).
+    bool  resizing_          = false;
+    float resizeStartMouseX_ = 0.f;
+    float resizeStartMouseY_ = 0.f;
+    float resizeStartW_      = 0.f;
+    float resizeStartH_      = 0.f;
+
     // In-progress stroke being drawn (local, not yet sent).
     cp::notepad::Stroke   scratchStroke_;
     bool                  drawing_      = false;
@@ -95,6 +108,7 @@ private:
                       const cp::notepad::Stroke& stroke);
     void netSheetDel (cp::notepad::NpId tabId, cp::notepad::NpId sheetId);
     void netSheetParam(cp::notepad::NpId tabId, const cp::notepad::Sheet& sheet);
+    void netTabDel   (cp::notepad::NpId tabId);
 
     // Render one canvas. Returns true if the owner requested the sheet be deleted.
     bool renderCanvas(cp::notepad::Tab& tab, cp::notepad::Sheet& sheet);

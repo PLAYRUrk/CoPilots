@@ -156,6 +156,29 @@ void NotepadWindow::onSheetParam(cp::notepad::NpId tabId,
     sheet->w = w; sheet->h = h;
 }
 
+void NotepadWindow::onTabDel(cp::notepad::NpId tabId)
+{
+    if (drawingTab_ == tabId) {
+        drawing_      = false;
+        drawingTab_   = cp::notepad::INVALID_NPID;
+        drawingSheet_ = cp::notepad::INVALID_NPID;
+        scratchStroke_ = {};
+    }
+    notepad_.tabs.erase(
+        std::remove_if(notepad_.tabs.begin(), notepad_.tabs.end(),
+                       [tabId](const cp::notepad::Tab& t){ return t.id == tabId; }),
+        notepad_.tabs.end());
+}
+
+void NotepadWindow::netTabDel(cp::notepad::NpId tabId)
+{
+    if (!sendFn) return;
+    auto frame = cp::proto::MsgBuilder(cp::proto::MsgType::NP_TAB_DEL)
+                 .u32(tabId)
+                 .build();
+    sendFn(std::move(frame));
+}
+
 void NotepadWindow::onSnapSheet(cp::notepad::NpId tabId,
                                 const std::string& tabName,
                                 cp::notepad::NpId sheetId,
@@ -469,9 +492,72 @@ void NotepadWindow::renderContent()
 {
     using namespace cp::notepad;
 
-    // Enforce a minimum window width
-    ImGui::SetNextWindowSizeConstraints(ImVec2(420.f, 300.f), ImVec2(FLT_MAX, FLT_MAX));
-    if (!xpwBeginWindow("Notepad")) { xpwEndWindow(); return; }
+    // Lazy-init target size from XPLM box (first draw only).
+    if (targetW_ < 1.f) {
+        targetW_ = (float)xpwWidth();
+        targetH_ = (float)xpwHeight();
+    }
+
+    // Force ImGui window to exactly our tracked size so it always matches the XPLM box.
+    // NoResize keeps ImGui's built-in resize grip hidden (we have our own handle below).
+    ImGui::SetNextWindowSize(ImVec2(targetW_, targetH_), ImGuiCond_Always);
+    ImGuiWindowFlags wf = ImGuiWindowFlags_NoMove
+                        | ImGuiWindowFlags_NoCollapse
+                        | ImGuiWindowFlags_NoResize
+                        | ImGuiWindowFlags_NoBringToFrontOnFocus;
+    if (!ImGui::Begin("Notepad", nullptr, wf)) { xpwEndWindow(); return; }
+
+    // ── Custom resize grip (bottom-right corner) ─────────────────────────────
+    {
+        const float gripSize = 20.f;
+        ImVec2 winPos  = ImGui::GetWindowPos();
+        ImVec2 winSize = ImGui::GetWindowSize();
+        ImVec2 gripMin = ImVec2(winPos.x + winSize.x - gripSize, winPos.y + winSize.y - gripSize);
+        ImVec2 gripMax = ImVec2(winPos.x + winSize.x,            winPos.y + winSize.y);
+
+        ImVec2 mouse = ImGui::GetMousePos();
+        bool inGrip = !resizing_ &&
+                      (mouse.x >= gripMin.x && mouse.x <= gripMax.x &&
+                       mouse.y >= gripMin.y && mouse.y <= gripMax.y);
+
+        if (inGrip || resizing_)
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNWSE);
+
+        if (inGrip && ImGui::IsMouseClicked(0)) {
+            resizing_          = true;
+            resizeStartMouseX_ = mouse.x;
+            resizeStartMouseY_ = mouse.y;
+            resizeStartW_      = winSize.x;
+            resizeStartH_      = winSize.y;
+        }
+        if (resizing_) {
+            if (ImGui::IsMouseDown(0)) {
+                float newW = resizeStartW_ + (mouse.x - resizeStartMouseX_);
+                float newH = resizeStartH_ + (mouse.y - resizeStartMouseY_);
+                newW = (newW < 420.f) ? 420.f : newW;
+                newH = (newH < 300.f) ? 300.f : newH;
+                targetW_ = newW;
+                targetH_ = newH;
+                xpwSetGeometry(xpwLeft(), xpwTop(),
+                               xpwLeft() + (int)newW,
+                               xpwTop()  - (int)newH);
+            } else {
+                resizing_ = false;
+            }
+        }
+
+        // Draw grip lines over everything else (foreground list)
+        ImDrawList* fg = ImGui::GetForegroundDrawList();
+        ImU32 gripCol = (inGrip || resizing_)
+                      ? IM_COL32(140, 180, 255, 220)
+                      : IM_COL32(100, 130, 180, 140);
+        for (int i = 1; i <= 3; ++i) {
+            float off = gripSize * 0.28f * (float)i;
+            fg->AddLine(ImVec2(gripMax.x - off, gripMax.y),
+                        ImVec2(gripMax.x,        gripMax.y - off),
+                        gripCol, 1.5f);
+        }
+    }
 
     uint8_t myPid = sess_ ? static_cast<uint8_t>(sess_->myId()) : 0;
 
@@ -487,6 +573,8 @@ void NotepadWindow::renderContent()
             notepad_.tabs.push_back(std::move(t));
         }
 
+        NpId toDeleteTab = INVALID_NPID;
+
         for (auto& tab : notepad_.tabs) {
             char tabLabel[80];
             snprintf(tabLabel, sizeof(tabLabel), "%s%s##%u",
@@ -501,10 +589,9 @@ void NotepadWindow::renderContent()
                 // Share button (tab owner only; once shared cannot unshare)
                 if (!tab.shared) {
                     if (!isTabOwner) ImGui::BeginDisabled();
-                    if (ImGui::SmallButton("Share Tab")) {
+                    if (ImGui::SmallButton("Share")) {
                         tab.shared = true;
                         netTabShare(tab);
-                        // Send existing content so the host absorbs it
                         for (const auto& sheet : tab.sheets) {
                             netSheetNew(tab.id, sheet);
                             for (const auto& stroke : sheet.strokes)
@@ -515,7 +602,7 @@ void NotepadWindow::renderContent()
                     ImGui::SameLine();
                 } else {
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 0.9f, 0.3f, 1.f));
-                    ImGui::TextUnformatted("Shared");
+                    ImGui::TextUnformatted("[Shared]");
                     ImGui::PopStyleColor();
                     ImGui::SameLine();
                 }
@@ -524,7 +611,7 @@ void NotepadWindow::renderContent()
                 if (isTabOwner) {
                     if (tabNameBuf_[0] == '\0')
                         strncpy(tabNameBuf_, tab.name.c_str(), sizeof(tabNameBuf_) - 1);
-                    ImGui::SetNextItemWidth(120.f);
+                    ImGui::SetNextItemWidth(110.f);
                     if (ImGui::InputText("##tabname", tabNameBuf_, sizeof(tabNameBuf_),
                                          ImGuiInputTextFlags_EnterReturnsTrue)) {
                         tab.name = tabNameBuf_;
@@ -543,6 +630,17 @@ void NotepadWindow::renderContent()
                     tab.activeSheet = sid;
                     if (tab.shared) netSheetNew(tab.id, *tab.findSheet(sid));
                 }
+                ImGui::SameLine();
+
+                // Delete tab button (owner only)
+                if (!isTabOwner) ImGui::BeginDisabled();
+                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.65f, 0.10f, 0.10f, 1.f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.85f, 0.15f, 0.15f, 1.f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.50f, 0.05f, 0.05f, 1.f));
+                if (ImGui::SmallButton("Del Tab"))
+                    toDeleteTab = tab.id;
+                ImGui::PopStyleColor(3);
+                if (!isTabOwner) ImGui::EndDisabled();
 
                 ImGui::Separator();
 
@@ -551,7 +649,7 @@ void NotepadWindow::renderContent()
                     ImGui::TextDisabled("No sheets. Click +Sheet to create one.");
                 } else {
                     if (ImGui::BeginTabBar("##np_sheets")) {
-                        NpId toDelete = INVALID_NPID;
+                        NpId toDeleteSheet = INVALID_NPID;
                         for (auto& sheet : tab.sheets) {
                             char sheetLabel[48];
                             snprintf(sheetLabel, sizeof(sheetLabel),
@@ -560,14 +658,13 @@ void NotepadWindow::renderContent()
                             if (ImGui::BeginTabItem(sheetLabel)) {
                                 tab.activeSheet = sheet.id;
                                 if (renderCanvas(tab, sheet))
-                                    toDelete = sheet.id;
+                                    toDeleteSheet = sheet.id;
                                 ImGui::EndTabItem();
                             }
                         }
                         ImGui::EndTabBar();
-                        // Apply private-sheet deletion after the tab bar loop
-                        if (toDelete != INVALID_NPID)
-                            onSheetDel(tab.id, toDelete);
+                        if (toDeleteSheet != INVALID_NPID)
+                            onSheetDel(tab.id, toDeleteSheet);
                     }
                 }
 
@@ -576,6 +673,14 @@ void NotepadWindow::renderContent()
         }
 
         ImGui::EndTabBar();
+
+        // Process tab deletion after the tab bar loop to avoid iterator invalidation.
+        if (toDeleteTab != INVALID_NPID) {
+            // Find the tab to know if it's shared before erasing.
+            Tab* dying = notepad_.findTab(toDeleteTab);
+            if (dying && dying->shared) netTabDel(toDeleteTab);
+            onTabDel(toDeleteTab);
+        }
     }
 
     xpwEndWindow();

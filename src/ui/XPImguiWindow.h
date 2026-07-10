@@ -23,6 +23,8 @@ protected:
 
     int xpwWidth()  const { return xpR_ - xpL_; }
     int xpwHeight() const { return xpT_ - xpB_; }
+    int xpwLeft()   const { return xpL_; }
+    int xpwTop()    const { return xpT_; }
 
     bool xpwBeginWindow(const char* title, ImGuiWindowFlags extraFlags = 0);
     void xpwEndWindow();

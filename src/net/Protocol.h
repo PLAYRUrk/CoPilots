@@ -43,6 +43,7 @@ enum class MsgType : uint8_t {
     NP_SNAP_REQ        = 0x49,  // client → host:      request full shared-notepad snapshot
     NP_SNAP_SHEET      = 0x4A,  // host → client:      one sheet worth of strokes (may be chunked)
     NP_SNAP_END        = 0x4B,  // host → client:      snapshot complete
+    NP_TAB_DEL         = 0x4C,  // owner → host → all: delete a shared tab (owner only)
 
     HEARTBEAT          = 0xF0,
     CHAT               = 0xF1,
