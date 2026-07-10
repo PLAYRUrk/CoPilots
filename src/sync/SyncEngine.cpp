@@ -10,6 +10,23 @@ namespace cp {
 static constexpr float FLOAT_EPS   = 1e-5f;
 static constexpr double DOUBLE_EPS = 1e-9;
 
+// Returns true for datarefs that PhysicsSync manages exclusively via UDP.
+// Syncing these via TCP as well would cause UDP writes on clients to be
+// echoed back to the master, creating an oscillation that freezes the yoke.
+static bool isPhysicsOnlyDr(const std::string& path)
+{
+    auto startsWith = [&](const char* prefix, size_t n) {
+        return path.size() > n && path.compare(0, n, prefix, n) == 0;
+    };
+    if (startsWith("sim/joystick/yoke_",           19)) return true;
+    if (startsWith("sim/cockpit2/controls/yoke_",  27)) return true;
+    if (startsWith("sim/custom/controlls/yoke_",   26)) return true;
+    if (startsWith("sim/custom/SC/yoke_",          19)) return true;
+    if (path == "sim/operation/override/override_joystick")  return true;
+    if (path == "sim/operation/override/override_planepath") return true;
+    return false;
+}
+
 bool DrValue::approxEqual(const DrValue& o) const
 {
     if (type != o.type) return false;
@@ -159,6 +176,12 @@ void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
         // via UDP — those datarefs are outside the _AUTO namespace and not in DataRefs.txt.
         bool iOwn;
         bool isAutoZone = (rd.zoneId == AUTO_ZONE_ID);
+
+        // Yoke and override datarefs are owned exclusively by PhysicsSync (UDP).
+        // Sending them via TCP as well causes the UDP write on clients to be picked
+        // up as a "local change" on the next tick and echoed back, oscillating the yoke.
+        if ((isAutoZone || smartCopilotMode_) && isPhysicsOnlyDr(rd.path))
+            continue;
         if (isAutoZone || smartCopilotMode_)
             iOwn = true;
         else
@@ -216,6 +239,11 @@ void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
         // Echo from ourselves is dropped here; the cache echoSuppressed flag handles
         // the case where we just wrote this value ourselves via applyIncoming.
         if (senderParticipantId == session_->myId()) return;
+
+        // Yoke and override datarefs are driven exclusively by PhysicsSync via UDP.
+        // Reject TCP copies to prevent the UDP write from being treated as a local
+        // change on the next tick and echoed back (which would freeze the yoke at 0).
+        if (isPhysicsOnlyDr(rd->path)) return;
     } else {
         // Zone-authority mode: only apply if we don't own the zone.
         if (session_->iOwnZone(rd->zoneId)) return;

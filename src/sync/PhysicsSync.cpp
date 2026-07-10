@@ -126,10 +126,14 @@ void PhysicsSync::sendState()
     XPLMDataRef propRef = XPLMFindDataRef("sim/cockpit2/engine/actuators/prop_ratio");
     if (propRef) XPLMGetDatavf(propRef, s.prop_ratio, 0, 8);
 
-    // Flight controls — read combined surface deflection (captures joystick + mouse + AP).
-    XPLMDataRef ailRef  = XPLMFindDataRef("sim/flightmodel2/controls/aileron_avg");
-    XPLMDataRef elvRef  = XPLMFindDataRef("sim/flightmodel2/controls/elevator_avg");
-    XPLMDataRef rudRef  = XPLMFindDataRef("sim/flightmodel2/controls/rudder_avg");
+    // Flight controls — read raw joystick ratios directly.
+    // sim/flightmodel2/controls/*_avg does not exist in all XP11 installations and
+    // returns null (zero) when checked, which would overwrite clients' yoke positions
+    // with 0 every UDP frame. The joystick ratios are the actual hardware inputs when
+    // override_joystick=0 (master), and are exactly what applyState() writes on clients.
+    XPLMDataRef ailRef  = XPLMFindDataRef("sim/joystick/yoke_roll_ratio");
+    XPLMDataRef elvRef  = XPLMFindDataRef("sim/joystick/yoke_pitch_ratio");
+    XPLMDataRef rudRef  = XPLMFindDataRef("sim/joystick/yoke_heading_ratio");
     XPLMDataRef flapRef = XPLMFindDataRef("sim/cockpit2/controls/flap_handle_deploy_ratio");
     XPLMDataRef sbRef   = XPLMFindDataRef("sim/cockpit2/controls/speedbrake_ratio");
     if (ailRef)  s.aileron    = XPLMGetDataf(ailRef);
@@ -230,6 +234,17 @@ void PhysicsSync::applyState(const proto::PhysicsState& s)
     wflt("sim/joystick/yoke_roll_ratio",    s.aileron);
     wflt("sim/joystick/yoke_pitch_ratio",   s.elevator);
     wflt("sim/joystick/yoke_heading_ratio", s.rudder);
+
+    // Tu-154 Felis SASL uses custom datarefs for the 3D cockpit yoke animation.
+    // Write them here so the UDP physics stream (not TCP SyncEngine) drives yoke visuals.
+    wflt("sim/custom/controlls/yoke_roll",      s.aileron);
+    wflt("sim/custom/controlls/yoke_pitch",     s.elevator);
+    wflt("sim/custom/SC/yoke_roll_ratio",       s.aileron);
+    wflt("sim/custom/SC/yoke_pitch_ratio",      s.elevator);
+    wflt("sim/custom/SC/yoke_heading_ratio",    s.rudder);
+    wflt("sim/cockpit2/controls/yoke_roll_ratio",    s.aileron);
+    wflt("sim/cockpit2/controls/yoke_pitch_ratio",   s.elevator);
+    wflt("sim/cockpit2/controls/yoke_heading_ratio", s.rudder);
 
     // Diagnostic: every 5 seconds log yoke state so we can verify what drives animation
     static int applyCount = 0;

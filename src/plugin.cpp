@@ -264,6 +264,18 @@ struct CoPilotsPlugin {
         if (netThread.connected && !session.isPhysicsMaster())
             syncEngine.refreshCache();
 
+        // Every ~10 seconds, the physics master resends all datarefs in full.
+        // This corrects SASL side-effects on clients (e.g. Tu-154 fire-valve callbacks
+        // that link valve_1 to valve_2/3 when we write valve_1 via TCP) — after the
+        // full sync clients receive the authoritative 0 values for the untouched valves.
+        if (netThread.connected && session.isPhysicsMaster()) {
+            static int fullSyncFrames = 0;
+            if (++fullSyncFrames >= 600) {
+                fullSyncFrames = 0;
+                syncEngine.requestFullSync();
+            }
+        }
+
         if (netThread.connected)
             weatherSync.tick(1.f / 60.f);
 
