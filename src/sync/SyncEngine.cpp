@@ -126,6 +126,17 @@ void SyncEngine::writeDr(const RegisteredDataref& rd, const DrValue& val)
     }
 }
 
+void SyncEngine::refreshCache()
+{
+    if (!reg_) return;
+    const auto& drs = reg_->datarefs();
+    for (size_t i = 0; i < drs.size() && i < cache_.size(); ++i) {
+        const auto& rd = drs[i];
+        if (rd.handle && !cache_[i].echoSuppressed)
+            cache_[i].value = readDr(rd);
+    }
+}
+
 void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
 {
     if (!reg_ || !session_) return;
@@ -221,6 +232,21 @@ void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
     if (++applyLog <= 10 || applyLog % 600 == 0)
         Log("SyncEngine::applyIncoming idx=%u zone=%s writable=%d sender=%u",
             drIndex, rd->zoneId.c_str(), (int)rd->writable, senderParticipantId);
+
+    // Extra log for yoke/override datarefs to diagnose animation issues
+    {
+        const std::string& p = rd->path;
+        bool isYoke = p.find("yoke") != std::string::npos
+                   || p.find("override_joystick") != std::string::npos;
+        if (isYoke) {
+            float fval = (val.type == DrType::FLOAT) ? val.f
+                       : (val.type == DrType::INT)   ? (float)val.i : 0.f;
+            static int yokeLog = 0;
+            if (++yokeLog <= 20 || yokeLog % 120 == 0)
+                Log("SyncEngine::applyIncoming YOKE path=%s val=%.4f sender=%u",
+                    p.c_str(), fval, senderParticipantId);
+        }
+    }
 
     writeDr(*rd, val);
 

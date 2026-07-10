@@ -205,6 +205,10 @@ void PhysicsSync::applyState(const proto::PhysicsState& s)
         XPLMDataRef dr = XPLMFindDataRef(path);
         if (dr) XPLMSetDataf(dr, val);
     };
+    auto rflt = [](const char* path) -> float {
+        XPLMDataRef dr = XPLMFindDataRef(path);
+        return dr ? XPLMGetDataf(dr) : -999.f;
+    };
 
     wdbl("sim/flightmodel/position/local_x", lx);
     wdbl("sim/flightmodel/position/local_y", ly);
@@ -226,6 +230,31 @@ void PhysicsSync::applyState(const proto::PhysicsState& s)
     wflt("sim/joystick/yoke_roll_ratio",    s.aileron);
     wflt("sim/joystick/yoke_pitch_ratio",   s.elevator);
     wflt("sim/joystick/yoke_heading_ratio", s.rudder);
+
+    // Diagnostic: every 5 seconds log yoke state so we can verify what drives animation
+    static int applyCount = 0;
+    if (++applyCount % 300 == 1) {
+        int joyOvrVal = joyOvr ? XPLMGetDatai(joyOvr) : -1;
+        float rollAfter  = rflt("sim/joystick/yoke_roll_ratio");
+        float pitchAfter = rflt("sim/joystick/yoke_pitch_ratio");
+        // Actual control surface deflection computed by flight model from joystick input
+        float ailAvg = rflt("sim/flightmodel2/controls/aileron_avg");
+        // Custom SASL yoke datarefs used by Tu-154 for cockpit object animation
+        float customYR  = rflt("sim/custom/controlls/yoke_roll");
+        float customYP  = rflt("sim/custom/controlls/yoke_pitch");
+        float customSCR = rflt("sim/custom/SC/yoke_roll_ratio");
+        Log("PhysicsSync::applyState DIAG override_joy=%d  "
+            "set_roll=%.3f got_roll=%.3f  "
+            "set_pitch=%.3f got_pitch=%.3f  "
+            "aileron_avg=%.3f  "
+            "custom/controlls/yoke_roll=%.3f  "
+            "custom/controlls/yoke_pitch=%.3f  "
+            "custom/SC/yoke_roll_ratio=%.3f",
+            joyOvrVal,
+            s.aileron, rollAfter,
+            s.elevator, pitchAfter,
+            ailAvg, customYR, customYP, customSCR);
+    }
 
     // Throttle lever.
     XPLMDataRef thrRef = XPLMFindDataRef("sim/cockpit2/engine/actuators/throttle_ratio");

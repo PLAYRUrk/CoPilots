@@ -41,6 +41,12 @@ public:
 
     void reset();
 
+    // Re-read all datarefs into the cache without sending anything. Call this after
+    // external writes (applyState, SASL callbacks) so SyncEngine doesn't treat those
+    // writes as local user changes on the next tick. Echo-suppressed entries are skipped
+    // so an in-flight echo suppression from applyIncoming() is not clobbered.
+    void refreshCache();
+
     // Force all datarefs to be sent on the next tick (used when a new client joins)
     void requestFullSync() { fullSyncPending_ = true; }
 

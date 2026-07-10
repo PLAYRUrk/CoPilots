@@ -207,6 +207,20 @@ struct CoPilotsPlugin {
     {
         if (!active) return;
 
+        // Detect and send local user changes FIRST, before processing any incoming
+        // network messages. This prevents SASL callbacks triggered by applyIncoming()
+        // from being mistaken for local user changes on this tick.
+        if (registry.datarefs().size() > 0 && netThread.connected) {
+            syncEngine.tick(
+                [this](uint16_t idx, const cp::DrValue& val) {
+                    sendDatarefSet(idx, val);
+                },
+                [this](uint16_t idx) {
+                    sendCommandFire(idx);
+                }
+            );
+        }
+
         cp::net::InboundMsg msg;
         while (netThread.inTcp.pop(msg)) {
             handleTcpMessage(msg);
@@ -239,19 +253,16 @@ struct CoPilotsPlugin {
             }
         }
 
-        if (registry.datarefs().size() > 0 && netThread.connected) {
-            syncEngine.tick(
-                [this](uint16_t idx, const cp::DrValue& val) {
-                    sendDatarefSet(idx, val);
-                },
-                [this](uint16_t idx) {
-                    sendCommandFire(idx);
-                }
-            );
-        }
-
         if (netThread.connected)
             physicsSync.tick();
+
+        // On non-masters: refresh the SyncEngine cache after applyState() has written
+        // throttle/brake/flap datarefs and after SASL callbacks may have fired from
+        // applyIncoming(). Without this, SyncEngine would detect those writes as local
+        // user changes on the next tick and send them back to the physics master,
+        // causing the snap-back / jitter feedback loop.
+        if (netThread.connected && !session.isPhysicsMaster())
+            syncEngine.refreshCache();
 
         if (netThread.connected)
             weatherSync.tick(1.f / 60.f);
