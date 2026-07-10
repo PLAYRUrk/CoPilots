@@ -89,6 +89,14 @@ void PhysicsSync::tick()
 
         sendState();
     } else if (hasState_) {
+        // We have state from the physics master.
+        // Explicitly clear override_planepath so the local flight model can run freely
+        // (engines, hydraulics, SASL systems all need the unfrozen model to work).
+        // This must be cleared EVERY tick: the gap-branch below sets it to 1, and it
+        // would otherwise stay frozen forever once we transition from gap→active follower.
+        XPLMDataRef ovPath = XPLMFindDataRef("sim/operation/override/override_planepath");
+        if (ovPath) { int z = 0; XPLMSetDatavi(ovPath, &z, 0, 1); }
+
         applyState(latestState_);
     } else {
         // Non-master with no state from the current master yet — keep joystick and

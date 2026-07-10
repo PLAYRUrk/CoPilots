@@ -249,6 +249,20 @@ void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
 
         if (send) {
             c.value = cur;
+
+            // Targeted unconditional log for fuel fire-valve datarefs (rate-limited
+            // to 1 per dataref per 60 frames) so we can trace the exact valve
+            // indices/values sent from each side and diagnose the "all three move" bug.
+            if (rd.path.find("fire_v") != std::string::npos) {
+                static int fireValveSendLog = 0;
+                if (++fireValveSendLog <= 200 || fireValveSendLog % 60 == 0) {
+                    float fv = (cur.type == DrType::FLOAT) ? cur.f
+                             : (cur.type == DrType::INT)   ? (float)cur.i : 0.f;
+                    Log("SyncEngine::tick SEND fire_v path=%s val=%.4f idx=%zu",
+                        rd.path.c_str(), fv, i);
+                }
+            }
+
             onChanged(static_cast<uint16_t>(i), cur);
             ++sentCount;
         }
@@ -311,9 +325,22 @@ void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
             fval, (int)rd->writable, senderParticipantId);
     }
 
-    // Extra log for yoke/override datarefs to diagnose animation issues
+    // Targeted unconditional log for fuel fire-valve datarefs — rate-limited
+    // so we see every event without flooding; crucial to diagnose the "all three
+    // move" bug (SASL-linking vs echo vs wrong valve relayed from host).
     {
         const std::string& p = rd->path;
+        if (p.find("fire_v") != std::string::npos) {
+            float fval = (val.type == DrType::FLOAT) ? val.f
+                       : (val.type == DrType::INT)   ? (float)val.i : 0.f;
+            static int fireValveLog = 0;
+            if (++fireValveLog <= 200 || fireValveLog % 30 == 0)
+                Log("SyncEngine::applyIncoming RECV fire_v path=%s val=%.4f sender=%u suppressAfter=%d",
+                    p.c_str(), fval, senderParticipantId,
+                    (drIndex < cache_.size()) ? 30 : -1);
+        }
+
+        // Extra log for yoke/override datarefs to diagnose animation issues
         bool isYoke = p.find("yoke") != std::string::npos
                    || p.find("override_joystick") != std::string::npos;
         if (isYoke) {

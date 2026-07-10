@@ -247,8 +247,19 @@ bool NotepadWindow::renderCanvas(cp::notepad::Tab& tab, cp::notepad::Sheet& shee
 {
     using namespace cp::notepad;
 
-    bool isOwner = sess_ && (npOwner(sheet.id) == static_cast<uint8_t>(sess_->myId()));
     bool shared  = tab.shared;
+
+    // A sheet is "ours" for UI editing purposes if:
+    //   • it is private (never sent to the network, so only we see it), OR
+    //   • we are its author (npOwner matches our current participant id), OR
+    //   • it was created before we joined (owner==0xFF/INVALID), which only happens
+    //     for locally-minted content made while offline/solo.
+    // Without the INVALID check, content created in the lobby (myId==0xFF) becomes
+    // permanently locked once we join and get a real id (e.g. 1), because 0xFF≠1.
+    uint8_t myPidSheet = sess_ ? static_cast<uint8_t>(sess_->myId()) : 0xFF;
+    bool isOwner = !shared
+                || npOwner(sheet.id) == myPidSheet
+                || npOwner(sheet.id) == static_cast<uint8_t>(cp::INVALID_PARTICIPANT_ID);
 
     // ── Sheet controls (owner only or disabled) ─────────────────────────────
     if (!isOwner) ImGui::BeginDisabled();
@@ -653,7 +664,11 @@ void NotepadWindow::renderContent()
                      tab.id);
 
             if (ImGui::BeginTabItem(tabLabel)) {
-                bool isTabOwner = (npOwner(tab.id) == myPid);
+                // Same ownership logic as for sheets: private always ours; shared ours
+                // if we're the author or if the tab was minted offline (owner==0xFF).
+                bool isTabOwner = !tab.shared
+                               || npOwner(tab.id) == myPid
+                               || npOwner(tab.id) == static_cast<uint8_t>(cp::INVALID_PARTICIPANT_ID);
 
                 // ── Tab header ───────────────────────────────────────────────
                 // Share button (tab owner only; once shared cannot unshare)
