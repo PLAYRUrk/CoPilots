@@ -152,6 +152,13 @@ void PhysicsSync::sendState()
     if (lBrRef) s.left_brake  = XPLMGetDataf(lBrRef);
     if (rBrRef) s.right_brake = XPLMGetDataf(rBrRef);
 
+    // Engine N2/N1 — sent directly so clients can write the indicator datarefs at 60 Hz,
+    // bypassing custom SASL engine models that may recompute from a blocked hardware throttle.
+    XPLMDataRef n2Ref = XPLMFindDataRef("sim/cockpit2/engine/indicators/N2_percent_pilot");
+    if (n2Ref) XPLMGetDatavf(n2Ref, s.engine_N2, 0, 8);
+    XPLMDataRef n1Ref = XPLMFindDataRef("sim/cockpit2/engine/indicators/N1_percent_pilot");
+    if (n1Ref) XPLMGetDatavf(n1Ref, s.engine_N1, 0, 8);
+
     net::UdpDatagram dg;
     dg.data.resize(sizeof(s));
     memcpy(dg.data.data(), &s, sizeof(s));
@@ -299,6 +306,13 @@ void PhysicsSync::applyState(const proto::PhysicsState& s)
     // Toe brakes.
     wflt("sim/cockpit2/controls/left_brake_ratio",  s.left_brake);
     wflt("sim/cockpit2/controls/right_brake_ratio", s.right_brake);
+
+    // Engine N2/N1 — written at 60 Hz to override any SASL engine model that computes N2
+    // from a locally-blocked hardware throttle axis, giving clients correct gauge readings.
+    XPLMDataRef n2Ref = XPLMFindDataRef("sim/cockpit2/engine/indicators/N2_percent_pilot");
+    if (n2Ref) XPLMSetDatavf(n2Ref, const_cast<float*>(s.engine_N2), 0, 8);
+    XPLMDataRef n1Ref = XPLMFindDataRef("sim/cockpit2/engine/indicators/N1_percent_pilot");
+    if (n1Ref) XPLMSetDatavf(n1Ref, const_cast<float*>(s.engine_N1), 0, 8);
 }
 
 }

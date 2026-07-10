@@ -61,6 +61,7 @@ set(COPILOTS_SOURCES
     src/ui/ConnectionWindow.cpp
     src/ui/LobbyWindow.cpp
     src/ui/StatusHud.cpp
+    src/ui/NotepadWindow.cpp
 )
 
 # Dear ImGui source files

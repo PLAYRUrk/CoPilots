@@ -27,6 +27,13 @@ protected:
     bool xpwBeginWindow(const char* title, ImGuiWindowFlags extraFlags = 0);
     void xpwEndWindow();
 
+    // Clamp a proposed window box so it stays fully within the global screen bounds.
+    // Preserves width/height; shifts the box inward if any edge is out of bounds.
+    void clampToScreen(int& l, int& t, int& r, int& b) const;
+
+    // Call clampToScreen then XPLMSetWindowGeometry and update cached coords.
+    void xpwSetGeometry(int l, int t, int r, int b);
+
     ImVec2 lastWindowSize_ = {0.f, 0.f};
 
 private:

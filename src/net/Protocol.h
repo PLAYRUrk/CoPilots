@@ -32,6 +32,17 @@ enum class MsgType : uint8_t {
     DATAREF_SET        = 0x40,
     COMMAND_FIRE       = 0x41,
     WEATHER_STATE      = 0x42,
+    RESYNC_REQUEST     = 0x43,  // client → host: SASL side-effects detected, request full resync
+
+    // Notepad / whiteboard messages (0x44–0x4B)
+    NP_TAB_SHARE       = 0x44,  // any → host → all:  announce that a private tab is now shared
+    NP_SHEET_NEW       = 0x45,  // any → host → all:  create a new sheet in a shared tab
+    NP_STROKE_ADD      = 0x46,  // any → host → all:  append one completed stroke to a sheet
+    NP_SHEET_DEL       = 0x47,  // owner → host → all: delete a sheet (owner only)
+    NP_SHEET_PARAM     = 0x48,  // owner → host → all: resize / rename a sheet (owner only)
+    NP_SNAP_REQ        = 0x49,  // client → host:      request full shared-notepad snapshot
+    NP_SNAP_SHEET      = 0x4A,  // host → client:      one sheet worth of strokes (may be chunked)
+    NP_SNAP_END        = 0x4B,  // host → client:      snapshot complete
 
     HEARTBEAT          = 0xF0,
     CHAT               = 0xF1,
@@ -74,6 +85,8 @@ struct PhysicsState {
     float    left_brake;         // left toe brake ratio
     float    right_brake;        // right toe brake ratio
     float    prop_ratio[8];      // prop pitch ratio (turboprops/pistons)
+    float    engine_N2[8];      // engine N2 RPM % — written directly to bypass SASL engine overrides
+    float    engine_N1[8];      // engine N1 / EPR % — same rationale
 };
 static_assert(sizeof(PhysicsState) < 512, "PhysicsState too large for single UDP");
 

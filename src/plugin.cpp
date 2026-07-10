@@ -10,6 +10,8 @@
 #include "net/Transport.h"
 #include "ui/ConnectionWindow.h"
 #include "ui/StatusHud.h"
+#include "ui/NotepadWindow.h"
+#include "ui/Notepad.h"
 
 #include <XPLM/XPLMPlugin.h>
 #include <XPLM/XPLMDisplay.h>
@@ -39,6 +41,10 @@ struct CoPilotsPlugin {
 
     cp::ui::ConnectionWindow connWin;
     cp::ui::StatusHud        statusHud;
+    cp::ui::NotepadWindow    notepadWin;
+
+    // Host-authoritative shared notepad state (host only; cleared on disconnect).
+    cp::notepad::Notepad     sharedNotepad_;
 
     // Maps TCP connection ID (from network thread) → participant ID (from session)
     std::map<uint8_t, cp::ParticipantId> connIdMap_;
@@ -169,6 +175,21 @@ struct CoPilotsPlugin {
         statusHud.init();
         statusHud.setSession(&session);
         connWin.setData(&session, &config.get());
+
+        notepadWin.init();
+        notepadWin.setSession(&session);
+        // Wire up the notepad send function: push a framed TCP message to the network
+        // (target=0xFF on host broadcasts; on clients the transport ignores target).
+        notepadWin.sendFn = [this](std::vector<uint8_t> frame) {
+            cp::net::OutboundMsg out;
+            out.target = 0xFF;
+            out.frame  = std::move(frame);
+            netThread.outTcp.push(std::move(out));
+        };
+
+        // StatusHud quick-open buttons
+        statusHud.onToggleConn    = [this]() { connWin.setVisible(!connWin.visible()); };
+        statusHud.onToggleNotepad = [this]() { notepadWin.setVisible(!notepadWin.visible()); };
         weatherSync.init(&session, &netThread);
 
         XPLMCreateFlightLoop_t params{};
@@ -199,6 +220,7 @@ struct CoPilotsPlugin {
 
         connWin.shutdown();
         statusHud.shutdown();
+        notepadWin.shutdown();
         cp::net::ShutdownNetwork();
         Log("Plugin disabled");
     }
@@ -221,8 +243,11 @@ struct CoPilotsPlugin {
             );
         }
 
+        bool anyDatarefApplied = false;
         cp::net::InboundMsg msg;
         while (netThread.inTcp.pop(msg)) {
+            if (static_cast<cp::proto::MsgType>(msg.type) == cp::proto::MsgType::DATAREF_SET)
+                anyDatarefApplied = true;
             handleTcpMessage(msg);
         }
 
@@ -264,13 +289,30 @@ struct CoPilotsPlugin {
         if (netThread.connected && !session.isPhysicsMaster())
             syncEngine.refreshCache();
 
-        // Every ~10 seconds, the physics master resends all datarefs in full.
-        // This corrects SASL side-effects on clients (e.g. Tu-154 fire-valve callbacks
-        // that link valve_1 to valve_2/3 when we write valve_1 via TCP) — after the
-        // full sync clients receive the authoritative 0 values for the untouched valves.
+        // When a non-master client has just received DATAREF_SET packets, SASL side-effects
+        // (e.g. Tu-154 fire-valve logic linking valve_1→valve_2/3) may have silently changed
+        // adjacent datarefs that refreshCache() absorbed. Ask the master to do a full resync
+        // so those incorrect values are overwritten quickly instead of waiting for the
+        // periodic backup resync below. Rate-limited to at most once every 2 seconds.
+        if (netThread.connected && !session.isPhysicsMaster() && anyDatarefApplied) {
+            static int resyncRequestCooldown = 0;
+            if (resyncRequestCooldown > 0) {
+                --resyncRequestCooldown;
+            } else {
+                resyncRequestCooldown = 120; // ~2 s at 60 fps
+                auto frame = cp::proto::MsgBuilder(cp::proto::MsgType::RESYNC_REQUEST).build();
+                cp::net::OutboundMsg out;
+                out.target = 0;
+                out.frame  = std::move(frame);
+                netThread.outTcp.push(std::move(out));
+            }
+        }
+
+        // Periodic backup full resync every ~5 seconds — catches any SASL side-effects
+        // that slipped through the RESYNC_REQUEST mechanism (e.g. on the master itself).
         if (netThread.connected && session.isPhysicsMaster()) {
             static int fullSyncFrames = 0;
-            if (++fullSyncFrames >= 600) {
+            if (++fullSyncFrames >= 300) {
                 fullSyncFrames = 0;
                 syncEngine.requestFullSync();
             }
@@ -433,6 +475,15 @@ struct CoPilotsPlugin {
             cp::net::UdpDatagram udpAnn;
             udpAnn.data.assign(ann, ann + 2);
             netThread.outUdp.push(std::move(udpAnn));
+
+            // Request a snapshot of all shared notepad state from the host
+            {
+                auto snapReq = cp::proto::MsgBuilder(MT::NP_SNAP_REQ).build();
+                cp::net::OutboundMsg sreq;
+                sreq.target = 0;
+                sreq.frame  = std::move(snapReq);
+                netThread.outTcp.push(std::move(sreq));
+            }
             break;
         }
 
@@ -656,6 +707,243 @@ struct CoPilotsPlugin {
             break;
         }
 
+        case MT::RESYNC_REQUEST: {
+            // Client detected SASL side-effects (e.g. fire-valve chain) and requests a full
+            // resync so the master's authoritative values overwrite the corrupted ones quickly.
+            if (session.isHost())
+                syncEngine.requestFullSync();
+            break;
+        }
+
+        // ── Notepad messages ──────────────────────────────────────────────────
+        case MT::NP_TAB_SHARE: {
+            using namespace cp::notepad;
+            NpId tabId      = r.u32();
+            std::string name = r.str();
+            notepadWin.onTabShare(tabId, name);
+            if (session.isHost()) {
+                sharedNotepad_.ensureSharedTab(tabId, name);
+                // relay
+                cp::net::OutboundMsg relay;
+                relay.target = 0xFF;
+                relay.frame.resize(5 + msg.payload.size());
+                relay.frame[0] = msg.type;
+                uint32_t plen = static_cast<uint32_t>(msg.payload.size());
+                relay.frame[1]=plen&0xFF; relay.frame[2]=(plen>>8)&0xFF;
+                relay.frame[3]=(plen>>16)&0xFF; relay.frame[4]=(plen>>24)&0xFF;
+                std::copy(msg.payload.begin(), msg.payload.end(), relay.frame.begin()+5);
+                netThread.outTcp.push(std::move(relay));
+            }
+            break;
+        }
+
+        case MT::NP_SHEET_NEW: {
+            using namespace cp::notepad;
+            NpId tabId   = r.u32();
+            NpId sheetId = r.u32();
+            float w = r.f32(), h = r.f32();
+            notepadWin.onSheetNew(tabId, sheetId, w, h);
+            if (session.isHost()) {
+                Tab* tab = sharedNotepad_.findTab(tabId);
+                if (tab && !tab->findSheet(sheetId)) {
+                    Sheet s; s.id=sheetId; s.w=w; s.h=h;
+                    tab->sheets.push_back(std::move(s));
+                }
+                cp::net::OutboundMsg relay;
+                relay.target = 0xFF;
+                relay.frame.resize(5 + msg.payload.size());
+                relay.frame[0] = msg.type;
+                uint32_t plen = static_cast<uint32_t>(msg.payload.size());
+                relay.frame[1]=plen&0xFF; relay.frame[2]=(plen>>8)&0xFF;
+                relay.frame[3]=(plen>>16)&0xFF; relay.frame[4]=(plen>>24)&0xFF;
+                std::copy(msg.payload.begin(), msg.payload.end(), relay.frame.begin()+5);
+                netThread.outTcp.push(std::move(relay));
+            }
+            break;
+        }
+
+        case MT::NP_STROKE_ADD: {
+            using namespace cp::notepad;
+            NpId tabId   = r.u32();
+            NpId sheetId = r.u32();
+            Stroke stroke;
+            stroke.id        = r.u32();
+            stroke.tool      = static_cast<Tool>(r.u8());
+            stroke.colorRGBA = r.u32();
+            stroke.thickness = r.f32();
+            uint16_t n       = r.u16();
+            stroke.pts.reserve(n);
+            for (uint16_t i = 0; i < n; ++i) {
+                float px = r.f32(), py = r.f32();
+                stroke.pts.push_back({px, py});
+            }
+            notepadWin.onStrokeAdd(tabId, sheetId, stroke);
+            if (session.isHost()) {
+                Sheet* s = sharedNotepad_.findSheet(tabId, sheetId);
+                if (s) s->applyStroke(stroke);
+                cp::net::OutboundMsg relay;
+                relay.target = 0xFF;
+                relay.frame.resize(5 + msg.payload.size());
+                relay.frame[0] = msg.type;
+                uint32_t plen = static_cast<uint32_t>(msg.payload.size());
+                relay.frame[1]=plen&0xFF; relay.frame[2]=(plen>>8)&0xFF;
+                relay.frame[3]=(plen>>16)&0xFF; relay.frame[4]=(plen>>24)&0xFF;
+                std::copy(msg.payload.begin(), msg.payload.end(), relay.frame.begin()+5);
+                netThread.outTcp.push(std::move(relay));
+            }
+            break;
+        }
+
+        case MT::NP_SHEET_DEL: {
+            using namespace cp::notepad;
+            NpId tabId   = r.u32();
+            NpId sheetId = r.u32();
+            notepadWin.onSheetDel(tabId, sheetId);
+            if (session.isHost()) {
+                Tab* tab = sharedNotepad_.findTab(tabId);
+                if (tab) {
+                    tab->sheets.erase(
+                        std::remove_if(tab->sheets.begin(), tab->sheets.end(),
+                            [sheetId](const Sheet& s){ return s.id == sheetId; }),
+                        tab->sheets.end());
+                }
+                cp::net::OutboundMsg relay;
+                relay.target = 0xFF;
+                relay.frame.resize(5 + msg.payload.size());
+                relay.frame[0] = msg.type;
+                uint32_t plen = static_cast<uint32_t>(msg.payload.size());
+                relay.frame[1]=plen&0xFF; relay.frame[2]=(plen>>8)&0xFF;
+                relay.frame[3]=(plen>>16)&0xFF; relay.frame[4]=(plen>>24)&0xFF;
+                std::copy(msg.payload.begin(), msg.payload.end(), relay.frame.begin()+5);
+                netThread.outTcp.push(std::move(relay));
+            }
+            break;
+        }
+
+        case MT::NP_SHEET_PARAM: {
+            using namespace cp::notepad;
+            NpId tabId   = r.u32();
+            NpId sheetId = r.u32();
+            float w = r.f32(), h = r.f32();
+            notepadWin.onSheetParam(tabId, sheetId, w, h);
+            if (session.isHost()) {
+                Sheet* s = sharedNotepad_.findSheet(tabId, sheetId);
+                if (s) { s->w = w; s->h = h; }
+                cp::net::OutboundMsg relay;
+                relay.target = 0xFF;
+                relay.frame.resize(5 + msg.payload.size());
+                relay.frame[0] = msg.type;
+                uint32_t plen = static_cast<uint32_t>(msg.payload.size());
+                relay.frame[1]=plen&0xFF; relay.frame[2]=(plen>>8)&0xFF;
+                relay.frame[3]=(plen>>16)&0xFF; relay.frame[4]=(plen>>24)&0xFF;
+                std::copy(msg.payload.begin(), msg.payload.end(), relay.frame.begin()+5);
+                netThread.outTcp.push(std::move(relay));
+            }
+            break;
+        }
+
+        case MT::NP_SNAP_REQ: {
+            // Only the host answers snapshot requests.
+            if (!session.isHost()) break;
+            // Find the requesting client's connId (msg.sender on host = connId).
+            uint8_t target = msg.sender;
+
+            // Stream each shared tab/sheet to the requester in chunks (~900 KiB each).
+            for (const auto& tab : sharedNotepad_.tabs) {
+                if (!tab.shared) continue;
+                for (const auto& sheet : tab.sheets) {
+                    // Pack strokes into chunks.
+                    size_t idx = 0;
+                    bool firstChunk = true;
+                    while (idx <= sheet.strokes.size()) {
+                        // Estimate payload size; flush when close to 900 KiB or at end.
+                        auto b = cp::proto::MsgBuilder(MT::NP_SNAP_SHEET)
+                                 .u32(tab.id)
+                                 .str(tab.name)
+                                 .u32(sheet.id)
+                                 .f32(sheet.w)
+                                 .f32(sheet.h)
+                                 .u8(firstChunk ? 1 : 0);
+
+                        // Count how many strokes fit in ~900 KiB.
+                        size_t chunkStart = idx;
+                        size_t approxBytes = 20; // header overhead
+                        uint16_t cnt = 0;
+                        while (idx < sheet.strokes.size()) {
+                            const auto& stroke = sheet.strokes[idx];
+                            size_t strokeBytes = 4+4+4+1+4+4+2 + stroke.pts.size()*8;
+                            if (approxBytes + strokeBytes > 900*1024) break;
+                            approxBytes += strokeBytes;
+                            ++cnt;
+                            ++idx;
+                        }
+
+                        b.u16(cnt);
+                        for (size_t si = chunkStart; si < chunkStart + cnt; ++si) {
+                            const auto& stroke = sheet.strokes[si];
+                            b.u32(stroke.id)
+                             .u8(static_cast<uint8_t>(stroke.tool))
+                             .u32(stroke.colorRGBA)
+                             .f32(stroke.thickness)
+                             .u16(static_cast<uint16_t>(stroke.pts.size()));
+                            for (const auto& p : stroke.pts) b.f32(p.x).f32(p.y);
+                        }
+
+                        cp::net::OutboundMsg out;
+                        out.target = target;
+                        out.frame  = b.build();
+                        netThread.outTcp.push(std::move(out));
+
+                        firstChunk = false;
+                        if (idx >= sheet.strokes.size()) break;
+                    }
+                }
+            }
+
+            // Signal end of snapshot
+            {
+                auto end = cp::proto::MsgBuilder(MT::NP_SNAP_END).build();
+                cp::net::OutboundMsg out;
+                out.target = target;
+                out.frame  = std::move(end);
+                netThread.outTcp.push(std::move(out));
+            }
+            break;
+        }
+
+        case MT::NP_SNAP_SHEET: {
+            // Received by clients during snapshot.
+            using namespace cp::notepad;
+            NpId tabId    = r.u32();
+            std::string tabName = r.str();
+            NpId sheetId  = r.u32();
+            float w = r.f32(), h = r.f32();
+            bool isFirst  = (r.u8() != 0);
+            uint16_t cnt  = r.u16();
+            std::vector<Stroke> strokes;
+            strokes.reserve(cnt);
+            for (uint16_t i = 0; i < cnt; ++i) {
+                Stroke s;
+                s.id        = r.u32();
+                s.tool      = static_cast<Tool>(r.u8());
+                s.colorRGBA = r.u32();
+                s.thickness = r.f32();
+                uint16_t np = r.u16();
+                s.pts.reserve(np);
+                for (uint16_t j = 0; j < np; ++j) {
+                    float px = r.f32(), py = r.f32();
+                    s.pts.push_back({px, py});
+                }
+                strokes.push_back(std::move(s));
+            }
+            notepadWin.onSnapSheet(tabId, tabName, sheetId, w, h, isFirst, strokes);
+            break;
+        }
+
+        case MT::NP_SNAP_END:
+            notepadWin.onSnapEnd();
+            break;
+
         case MT::HEARTBEAT:
             break;
 
@@ -840,6 +1128,8 @@ struct CoPilotsPlugin {
         connRemoteIp_.clear();
         pendingConns_.clear();
         lobbyPassword_.clear();
+        sharedNotepad_.clear();
+        notepadWin.resetShared();
         connWin.setState(cp::ui::ConnState::IDLE);
     }
 
@@ -869,6 +1159,8 @@ struct CoPilotsPlugin {
             connWin.setVisible(!connWin.visible());
         else if (item == 1)
             statusHud.setVisible(!statusHud.visible());
+        else if (item == 2)
+            notepadWin.setVisible(!notepadWin.visible());
     }
 };
 
@@ -891,6 +1183,7 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc)
         }, g_plugin);
     XPLMAppendMenuItem(g_plugin->menuId, "Connect / Host", reinterpret_cast<void*>(0), 1);
     XPLMAppendMenuItem(g_plugin->menuId, "Toggle HUD",     reinterpret_cast<void*>(1), 1);
+    XPLMAppendMenuItem(g_plugin->menuId, "Notepad",        reinterpret_cast<void*>(2), 1);
 
     cp::Log("XPluginStart — CoPilots loaded");
     return 1;

@@ -1,6 +1,7 @@
 #pragma once
 #include "XPImguiWindow.h"
 #include "../session/Session.h"
+#include <functional>
 
 namespace cp {
 namespace ui {
@@ -20,13 +21,22 @@ public:
     void setVisible(bool v) { xpwSetVisible(v); }
     bool visible()    const { return xpwVisible(); }
 
+    // Callbacks wired by the plugin to toggle other windows.
+    std::function<void()> onToggleConn;
+    std::function<void()> onToggleNotepad;
+
 protected:
     void renderContent() override;
 
 private:
-    const Session* sess_       = nullptr;
-    uint32_t       ping_ms_    = 0;
-    float          packetLoss_ = 0.f;
+    const Session* sess_         = nullptr;
+    uint32_t       ping_ms_      = 0;
+    float          packetLoss_   = 0.f;
+    ImVec2         measuredSize_ = {0.f, 0.f};
+
+    // Re-pins the XPLM window box so the right/bottom edges stay fixed at the
+    // screen corner while the left/top grow as content changes.
+    void reanchorBottomRight();
 };
 
 }

@@ -101,6 +101,28 @@ void XPImguiWindow::xpwEndWindow()
     ImGui::End();
 }
 
+void XPImguiWindow::clampToScreen(int& l, int& t, int& r, int& b) const
+{
+    int sl, st, sr, sb;
+    XPLMGetScreenBoundsGlobal(&sl, &st, &sr, &sb);
+    int w = r - l;
+    int h = t - b;
+    // Clamp right/left
+    if (r > sr) { r = sr; l = r - w; }
+    if (l < sl) { l = sl; r = l + w; }
+    // Clamp top/bottom (XPLM: top > bottom, origin bottom-left)
+    if (t > st) { t = st; b = t - h; }
+    if (b < sb) { b = sb; t = b + h; }
+}
+
+void XPImguiWindow::xpwSetGeometry(int l, int t, int r, int b)
+{
+    clampToScreen(l, t, r, b);
+    if (!xpWin_) return;
+    xpL_ = l; xpT_ = t; xpR_ = r; xpB_ = b;
+    XPLMSetWindowGeometry(xpWin_, l, t, r, b);
+}
+
 void XPImguiWindow::onDraw()
 {
     if (!imCtx_ || !xpWin_) return;
@@ -168,10 +190,12 @@ void XPImguiWindow::onDraw()
     titleBarH_ = ImGui::GetFrameHeight();
 
     if (lastWindowSize_.x > 10.f && lastWindowSize_.y > 10.f) {
+        int newL = xpL_, newT = xpT_;
         int newR = xpL_ + (int)lastWindowSize_.x;
         int newB = xpT_  - (int)lastWindowSize_.y;
-        if (newR != xpR_ || newB != xpB_) {
-            xpR_ = newR; xpB_ = newB;
+        clampToScreen(newL, newT, newR, newB);
+        if (newL != xpL_ || newT != xpT_ || newR != xpR_ || newB != xpB_) {
+            xpL_ = newL; xpT_ = newT; xpR_ = newR; xpB_ = newB;
             XPLMSetWindowGeometry(xpWin_, xpL_, xpT_, xpR_, xpB_);
         }
     }
@@ -221,6 +245,7 @@ int XPImguiWindow::onMouse(int x, int y, XPLMMouseStatus status)
             int nT = dragStartT_ + dy;
             int nR = nL + (xpR_ - xpL_);
             int nB = nT - (xpT_ - xpB_);
+            clampToScreen(nL, nT, nR, nB);
             XPLMSetWindowGeometry(xpWin_, nL, nT, nR, nB);
             xpL_ = nL; xpT_ = nT; xpR_ = nR; xpB_ = nB;
         }
