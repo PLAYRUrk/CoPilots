@@ -180,6 +180,9 @@ void PhysicsSync::onUdpDatagram(const uint8_t* data, size_t len)
     }
 
     if (hasState_ && s->seq <= latestState_.seq) return;
+    if (!hasState_)
+        Log("PhysicsSync: first packet from master id=%u seq=%u — applyState will start",
+            s->sender_id, s->seq);
     latestState_ = *s;
     hasState_    = true;
 }

@@ -141,14 +141,15 @@ void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
         if (!rd.handle) continue;
 
         // Zone ownership:
-        //   _AUTO zone   → only the physics master sends (auto-discovered datarefs)
-        //   SmartCopilot → only the physics master sends; prevents non-master control
-        //                   inputs (e.g. mouse yoke) from reaching the master via TCP
+        //   _AUTO zone   → any participant sends; cockpit switches are not flight controls
+        //   SmartCopilot → any participant sends (same as original smartcopilot.cfg behaviour)
         //   normal       → only the participant who owns the zone sends
+        // Flight-control exclusivity (yoke, pedals, position) is enforced by PhysicsSync
+        // via UDP — those datarefs are outside the _AUTO namespace and not in DataRefs.txt.
         bool iOwn;
         bool isAutoZone = (rd.zoneId == AUTO_ZONE_ID);
         if (isAutoZone || smartCopilotMode_)
-            iOwn = session_->isPhysicsMaster();
+            iOwn = true;
         else
             iOwn = session_->iOwnZone(rd.zoneId);
         if (!iOwn) continue;
@@ -200,13 +201,10 @@ void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
     if (!rd || !rd->handle) return;
 
     if (rd->zoneId == AUTO_ZONE_ID || smartCopilotMode_) {
-        // _AUTO zone and SmartCopilot mode: only accept from the current physics master.
-        // This prevents non-master clients from overriding the master's state (e.g.,
-        // with stale values or control inputs like mouse yoke movements).
+        // _AUTO / SmartCopilot: accept from any other participant.
+        // Echo from ourselves is dropped here; the cache echoSuppressed flag handles
+        // the case where we just wrote this value ourselves via applyIncoming.
         if (senderParticipantId == session_->myId()) return;
-        ParticipantId pm = session_->physicsMasterId();
-        if (pm != INVALID_PARTICIPANT_ID && senderParticipantId != 0 &&
-            senderParticipantId != pm) return;
     } else {
         // Zone-authority mode: only apply if we don't own the zone.
         if (session_->iOwnZone(rd->zoneId)) return;

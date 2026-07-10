@@ -220,9 +220,19 @@ void NetThread::serverLoop(uint16_t tcpPort, uint16_t udpPort)
         while (outUdp.pop(dg)) {
             if (dg.to.ip.empty()) {
                 // Broadcast to all clients with a known UDP endpoint
+                static uint64_t lastRelayLog = 0;
+                int relayCount = 0;
                 for (auto& c : clients) {
-                    if (!c.udpEp.ip.empty())
+                    if (!c.udpEp.ip.empty()) {
                         UdpSendTo(udpSock, dg.data.data(), dg.data.size(), c.udpEp);
+                        ++relayCount;
+                    }
+                }
+                uint64_t nowMs = NowMs();
+                if (relayCount > 0 && nowMs - lastRelayLog > 5000) {
+                    lastRelayLog = nowMs;
+                    Log("NetThread(server): UDP relay type=0x%02X to %d client(s)",
+                        dg.data.empty() ? 0 : dg.data[0], relayCount);
                 }
             } else {
                 UdpSendTo(udpSock, dg.data.data(), dg.data.size(), dg.to);
