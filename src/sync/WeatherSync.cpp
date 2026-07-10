@@ -65,12 +65,29 @@ void WeatherSync::init(Session* session, net::NetThread* net)
 void WeatherSync::reset()
 {
     elapsed_ = 0.f;
+    if (suppressingRealWeather_) {
+        XPLMDataRef dr = XPLMFindDataRef("sim/weather/use_real_weather_bool");
+        if (dr && XPLMCanWriteDataRef(dr))
+            XPLMSetDatai(dr, 1);
+        suppressingRealWeather_ = false;
+    }
 }
 
 void WeatherSync::tick(float dt)
 {
     if (!session_ || !net_) return;
-    if (!session_->isWeatherMaster()) return;
+
+    if (!session_->isWeatherMaster()) {
+        // Pin real weather off every frame so X-Plane's real-weather updater
+        // doesn't override values synced from the weather master.
+        // Mirrors how PhysicsSync pins override_joystick=0 on the physics master.
+        XPLMDataRef dr = XPLMFindDataRef("sim/weather/use_real_weather_bool");
+        if (dr && XPLMCanWriteDataRef(dr)) {
+            XPLMSetDatai(dr, 0);
+            suppressingRealWeather_ = true;
+        }
+        return;
+    }
 
     elapsed_ += dt;
     if (elapsed_ < kSendInterval) return;
@@ -149,9 +166,6 @@ void WeatherSync::applyState(proto::MsgReader& r)
     int   date_days   = static_cast<int>(r.u32());
 
     if (!r.ok()) return;
-
-    // Disable real-weather mode so our values aren't immediately overridden
-    wdri("sim/weather/use_real_weather_bool", 0);
 
     wdrfa("sim/weather/wind_speed_kt",       wind_speed, 3);
     wdrfa("sim/weather/wind_direction_degt",  wind_dir,   3);

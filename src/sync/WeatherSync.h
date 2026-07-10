@@ -17,7 +17,8 @@ public:
 private:
     Session*        session_   = nullptr;
     net::NetThread* net_       = nullptr;
-    float           elapsed_   = 0.f;
+    float           elapsed_                = 0.f;
+    bool            suppressingRealWeather_ = false;
 
     static constexpr float kSendInterval = 5.f;
 
