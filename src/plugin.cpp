@@ -19,6 +19,7 @@
 #include <XPLM/XPLMUtilities.h>
 #include <XPLM/XPLMMenus.h>
 #include <XPLM/XPLMPlanes.h>
+#include <XPLM/XPLMDataAccess.h>
 
 #include <cstring>
 #include <map>
@@ -28,6 +29,23 @@
 #include <algorithm>
 
 using namespace cp;
+
+// ── SmartCopilot API compatibility ──────────────────────────────────────────
+// Felis Tu-154 (and other SASL aircraft) read scp/api/ismaster to detect a
+// SmartCopilot-compatible multiplayer plugin. Values: 0=not found/solo,
+// 1=slave (client), 2=master (physics captain). When the dataref is absent
+// (returns 0), the SASL fuel system runs its full logic on every participant,
+// causing all fire valves to animate together. Setting 1 on clients suppresses
+// that logic and lets the synced values from the physics master drive the sim.
+static float       s_scpIsmaster   = 0.f;
+static float       s_scpHasControl = 0.f;
+static XPLMDataRef s_scpIsmasterDref   = nullptr;
+static XPLMDataRef s_scpHasControlDref = nullptr;
+
+static float scpGetIsmaster (void*)         { return s_scpIsmaster; }
+static void  scpSetIsmaster (void*, float v) { s_scpIsmaster = v; }
+static float scpGetHasControl(void*)         { return s_scpHasControl; }
+static void  scpSetHasControl(void*, float v){ s_scpHasControl = v; }
 
 struct CoPilotsPlugin {
 
@@ -325,6 +343,17 @@ struct CoPilotsPlugin {
             connWin.setState(cp::ui::ConnState::CONNECT_ERROR, netThread.lastError);
             netThread.hasError = false;
             session.clear();
+        }
+
+        // Keep SmartCopilot compatibility datarefs current every frame so SASL
+        // aircraft always see the correct master/slave state without any lag.
+        if (netThread.connected) {
+            bool amMaster    = session.isPhysicsMaster();
+            s_scpIsmaster   = amMaster ? 2.f : 1.f;
+            s_scpHasControl = amMaster ? 2.f : 1.f;
+        } else {
+            s_scpIsmaster   = 0.f;
+            s_scpHasControl = 0.f;
         }
     }
 
@@ -1177,6 +1206,8 @@ struct CoPilotsPlugin {
         sharedNotepad_.clear();
         notepadWin.resetShared();
         connWin.setState(cp::ui::ConnState::IDLE);
+        s_scpIsmaster   = 0.f;
+        s_scpHasControl = 0.f;
     }
 
     void onAircraftLoaded()
@@ -1218,6 +1249,27 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc)
     strncpy(outSig,  "com.copilots.xp11", 64);
     strncpy(outDesc, "Multi-crew shared cockpit for X-Plane 11 — unlimited crew, zone-based authority", 256);
 
+    // Register SmartCopilot API datarefs so SASL aircraft detect us as a
+    // compatible multiplayer plugin the moment our plugin loads.
+    s_scpIsmasterDref = XPLMRegisterDataAccessor(
+        "scp/api/ismaster", xplmType_Float, /*writable=*/1,
+        nullptr, nullptr,
+        scpGetIsmaster, scpSetIsmaster,
+        nullptr, nullptr,
+        nullptr, nullptr,
+        nullptr, nullptr,
+        nullptr, nullptr,
+        nullptr, nullptr);
+    s_scpHasControlDref = XPLMRegisterDataAccessor(
+        "scp/api/hascontrol_1", xplmType_Float, /*writable=*/1,
+        nullptr, nullptr,
+        scpGetHasControl, scpSetHasControl,
+        nullptr, nullptr,
+        nullptr, nullptr,
+        nullptr, nullptr,
+        nullptr, nullptr,
+        nullptr, nullptr);
+
     g_plugin = new CoPilotsPlugin();
 
     XPLMMenuID pluginsMenu = XPLMFindPluginsMenu();
@@ -1243,6 +1295,9 @@ PLUGIN_API void XPluginStop()
         delete g_plugin;
         g_plugin = nullptr;
     }
+    if (s_scpIsmasterDref)   { XPLMUnregisterDataAccessor(s_scpIsmasterDref);   s_scpIsmasterDref   = nullptr; }
+    if (s_scpHasControlDref) { XPLMUnregisterDataAccessor(s_scpHasControlDref); s_scpHasControlDref = nullptr; }
+    s_scpIsmaster = s_scpHasControl = 0.f;
     cp::Log("XPluginStop");
 }
 

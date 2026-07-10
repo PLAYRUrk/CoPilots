@@ -362,8 +362,22 @@ void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
         cache_[drIndex].value = readDr(*rd);
         // Suppress outbound sends for ~0.5 s (30 frames) so SASL side-effect cascades
         // (fire-valve linking, etc.) have time to settle before we re-read and compare.
-        static constexpr int SUPPRESS_WINDOW = 30;
-        cache_[drIndex].suppressFrames = SUPPRESS_WINDOW;
+        //
+        // CONTINUOUS datarefs (animations like fire_vlv_open) get a much longer window
+        // (120 frames ≈ 2 s) because their SASL-driven animation continues to change
+        // the value every frame after the network update.  If the suppress window is
+        // shorter than the animation duration, the receiver detects the still-running
+        // SASL animation as a "local change" and echoes intermediate values back to the
+        // sender, causing the "position flashes then all three move" glitch on fire valves.
+        // The longer window lets SASL finish the animation; the cache tracks it to the
+        // final settled value so no echo fires when the window expires.
+        //
+        // ONCHANGE datarefs (switches, knobs) keep the short 30-frame window so user
+        // interactions still propagate within 0.5 s even during a suppress period.
+        static constexpr int SUPPRESS_WINDOW      = 30;
+        static constexpr int SUPPRESS_WINDOW_CONT = 120;
+        cache_[drIndex].suppressFrames =
+            (rd->mode == SyncMode::CONTINUOUS) ? SUPPRESS_WINDOW_CONT : SUPPRESS_WINDOW;
     }
 }
 
