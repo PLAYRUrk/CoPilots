@@ -114,6 +114,7 @@ void NetThread::serverLoop(uint16_t tcpPort, uint16_t udpPort)
                 if (getpeername(cs, reinterpret_cast<sockaddr*>(&peer), &plen) == 0)
                     inet_ntop(AF_INET, &peer.sin_addr, ipbuf, sizeof(ipbuf));
 
+                cc.tcpIp = ipbuf;
                 Log("NetThread(server): client %u connected (ip=%s)", cc.id, ipbuf);
                 clients.push_back(std::move(cc));
 
@@ -135,10 +136,24 @@ void NetThread::serverLoop(uint16_t tcpPort, uint16_t udpPort)
                 dg.from = from;
                 inUdp.push(std::move(dg));
 
-                if (n >= 1) {
+                // ANNOUNCE (type 0x05): client is registering its UDP endpoint.
+                // Match by TCP source IP so the relay works immediately, without
+                // waiting for the main thread to push clientUdpEpUpdates.
+                // The main thread will still process the ANNOUNCE to get the precise
+                // connId mapping and will call clientUdpEpUpdates to confirm or correct.
+                //
+                // Previous code set `from` on ALL clients with an empty udpEp regardless
+                // of packet type. When a non-host physics master sent PHYSICS_STATE,
+                // every other client would get the master's UDP address, so the relay
+                // was sent to the master instead of the actual recipients — they never
+                // received physics state and the yoke/pedal animation was invisible.
+                if (n >= 2 && udpBuf[0] == 0x05 /* UdpType::ANNOUNCE */) {
                     for (auto& c : clients) {
-                        if (c.udpEp.ip.empty()) {
+                        if (c.udpEp.ip.empty() && c.tcpIp == from.ip) {
                             c.udpEp = from;
+                            Log("NetThread(server): UDP ep for client %u set via ANNOUNCE (port=%u)",
+                                c.id, from.port);
+                            break;
                         }
                     }
                 }

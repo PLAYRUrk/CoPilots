@@ -89,6 +89,7 @@ private:
         SocketHandle  sock = INVALID_SOCK;
         TcpFramer     framer;
         UdpEndpoint   udpEp;
+        std::string   tcpIp;  // source IP from the TCP connection (for ANNOUNCE matching)
     };
 
     bool isServer_ = false;

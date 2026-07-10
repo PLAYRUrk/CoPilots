@@ -28,8 +28,8 @@ public:
     ParticipantId       weatherMasterId()  const { return weatherMasterId_; }
     ParticipantId       myId()             const { return myId_; }
     bool                isHost()           const { return isHost_; }
-    bool                isPhysicsMaster()  const { return myId_ == physicsMasterId_; }
-    bool                isWeatherMaster()  const { return myId_ == weatherMasterId_; }
+    bool                isPhysicsMaster()  const { return myId_ != INVALID_PARTICIPANT_ID && myId_ == physicsMasterId_; }
+    bool                isWeatherMaster()  const { return myId_ != INVALID_PARTICIPANT_ID && myId_ == weatherMasterId_; }
 
     ParticipantId authorityFor(const std::string& zoneId) const;
     bool          iOwnZone(const std::string& zoneId) const;

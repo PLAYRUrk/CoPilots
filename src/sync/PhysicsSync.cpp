@@ -51,6 +51,14 @@ void PhysicsSync::tick()
         // Became physics master — discard state from the previous master.
         hasState_ = false;
     }
+    if (!amMaster && wasPhysicsMaster_) {
+        // Lost master role — immediately block local joystick and planepath so there
+        // is no gap between the role change and the first UDP packet from the new master.
+        XPLMDataRef joyOvr = XPLMFindDataRef("sim/operation/override/override_joystick");
+        if (joyOvr) { int v = 1; XPLMSetDatai(joyOvr, v); }
+        XPLMDataRef ovPath = XPLMFindDataRef("sim/operation/override/override_planepath");
+        if (ovPath) { int v = 1; XPLMSetDatavi(ovPath, &v, 0, 1); }
+    }
     wasPhysicsMaster_ = amMaster;
 
     if (amMaster) {
@@ -65,6 +73,13 @@ void PhysicsSync::tick()
         sendState();
     } else if (hasState_) {
         applyState(latestState_);
+    } else {
+        // Non-master with no state from the current master yet — keep joystick and
+        // planepath blocked so local hardware cannot affect the plane during the gap.
+        XPLMDataRef joyOvr = XPLMFindDataRef("sim/operation/override/override_joystick");
+        if (joyOvr) { int v = 1; XPLMSetDatai(joyOvr, v); }
+        XPLMDataRef ovPath = XPLMFindDataRef("sim/operation/override/override_planepath");
+        if (ovPath) { int v = 1; XPLMSetDatavi(ovPath, &v, 0, 1); }
     }
 }
 
