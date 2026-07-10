@@ -44,6 +44,7 @@ enum class MsgType : uint8_t {
     NP_SNAP_SHEET      = 0x4A,  // host → client:      one sheet worth of strokes (may be chunked)
     NP_SNAP_END        = 0x4B,  // host → client:      snapshot complete
     NP_TAB_DEL         = 0x4C,  // owner → host → all: delete a shared tab (owner only)
+    NP_STROKE_DEL      = 0x4D,  // any → host → all:  delete one stroke by ID (smart eraser)
 
     HEARTBEAT          = 0xF0,
     CHAT               = 0xF1,
@@ -86,8 +87,9 @@ struct PhysicsState {
     float    left_brake;         // left toe brake ratio
     float    right_brake;        // right toe brake ratio
     float    prop_ratio[8];      // prop pitch ratio (turboprops/pistons)
-    float    engine_N2[8];      // engine N2 RPM % — written directly to bypass SASL engine overrides
-    float    engine_N1[8];      // engine N1 / EPR % — same rationale
+    float    engine_N2[8];      // real ENGN_N2_ RPM % — written to bypass SASL engine overrides
+    float    engine_N1[8];      // real ENGN_N1_ RPM % — same rationale
+    uint8_t  engine_running[8]; // sim/flightmodel/engine/ENGN_running (0/1 per engine)
 };
 static_assert(sizeof(PhysicsState) < 512, "PhysicsState too large for single UDP");
 

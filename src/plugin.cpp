@@ -820,6 +820,30 @@ struct CoPilotsPlugin {
             break;
         }
 
+        case MT::NP_STROKE_DEL: {
+            // Smart eraser: one stroke deleted by ID on the originating participant.
+            // Host removes it from the authoritative copy and relays to all others.
+            using namespace cp::notepad;
+            NpId tabId    = r.u32();
+            NpId sheetId  = r.u32();
+            NpId strokeId = r.u32();
+            notepadWin.onStrokeDel(tabId, sheetId, strokeId);
+            if (session.isHost()) {
+                Sheet* s = sharedNotepad_.findSheet(tabId, sheetId);
+                if (s) s->removeStroke(strokeId);
+                cp::net::OutboundMsg relay;
+                relay.target = 0xFF;
+                relay.frame.resize(5 + msg.payload.size());
+                relay.frame[0] = msg.type;
+                uint32_t plen = static_cast<uint32_t>(msg.payload.size());
+                relay.frame[1]=plen&0xFF; relay.frame[2]=(plen>>8)&0xFF;
+                relay.frame[3]=(plen>>16)&0xFF; relay.frame[4]=(plen>>24)&0xFF;
+                std::copy(msg.payload.begin(), msg.payload.end(), relay.frame.begin()+5);
+                netThread.outTcp.push(std::move(relay));
+            }
+            break;
+        }
+
         case MT::NP_SHEET_PARAM: {
             using namespace cp::notepad;
             NpId tabId   = r.u32();

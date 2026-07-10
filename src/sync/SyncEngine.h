@@ -50,9 +50,10 @@ public:
     // Force all datarefs to be sent on the next tick (used when a new client joins)
     void requestFullSync() { fullSyncPending_ = true; }
 
-    // In SmartCopilot mode only the physics master sends datarefs and only
-    // updates from the physics master are accepted. This prevents non-master
-    // control inputs (e.g. mouse yoke) from reaching the master via TCP.
+    // In SmartCopilot mode any participant sends datarefs they own; updates from
+    // any other participant are accepted.  Zone-based exclusivity applies only to
+    // flight controls (PhysicsSync via UDP), not cockpit switches.  The suppress
+    // window below acts as the last-writer-wins arbiter to kill ping-pong.
     void setSmartCopilotMode(bool v) { smartCopilotMode_ = v; }
 
 private:
@@ -63,7 +64,12 @@ private:
 
     struct Cache {
         DrValue value;
-        bool    echoSuppressed = false;
+        // After applyIncoming() writes a value, we suppress outbound sends for this
+        // many frames so SASL (or X-Plane) has time to settle before we re-read and
+        // compare.  During suppression, the cache tracks the settling value so that
+        // when the window expires, the first comparison is against the final value
+        // and no spurious retransmit occurs.
+        int     suppressFrames = 0;
         bool    cmdPending     = false;
     };
     std::vector<Cache> cache_;

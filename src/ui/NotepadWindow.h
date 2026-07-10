@@ -5,6 +5,7 @@
 #include <functional>
 #include <vector>
 #include <string>
+#include <unordered_set>
 
 namespace cp {
 namespace ui {
@@ -45,6 +46,9 @@ public:
     void onSheetDel (cp::notepad::NpId tabId, cp::notepad::NpId sheetId);
     void onSheetParam(cp::notepad::NpId tabId, cp::notepad::NpId sheetId, float w, float h);
     void onTabDel   (cp::notepad::NpId tabId);
+    // Smart eraser: delete one stroke on all participants.
+    void onStrokeDel(cp::notepad::NpId tabId, cp::notepad::NpId sheetId,
+                     cp::notepad::NpId strokeId);
 
     // Snapshot receive: called per-chunk (isFirstChunk=true resets the sheet).
     void onSnapSheet(cp::notepad::NpId tabId, const std::string& tabName,
@@ -89,6 +93,8 @@ private:
     // The sheet on which drawing_ is active (needed so we don't switch mid-stroke).
     cp::notepad::NpId     drawingTab_   = cp::notepad::INVALID_NPID;
     cp::notepad::NpId     drawingSheet_ = cp::notepad::INVALID_NPID;
+    // Smart eraser: stroke IDs already deleted in the current erase gesture (dedup guard).
+    std::unordered_set<cp::notepad::NpId> erasedThisStroke_;
 
     // Current tool settings
     cp::notepad::Tool currentTool_      = cp::notepad::Tool::Pen;
@@ -109,6 +115,8 @@ private:
     void netSheetDel (cp::notepad::NpId tabId, cp::notepad::NpId sheetId);
     void netSheetParam(cp::notepad::NpId tabId, const cp::notepad::Sheet& sheet);
     void netTabDel   (cp::notepad::NpId tabId);
+    void netStrokeDel(cp::notepad::NpId tabId, cp::notepad::NpId sheetId,
+                      cp::notepad::NpId strokeId);
 
     // Render one canvas. Returns true if the owner requested the sheet be deleted.
     bool renderCanvas(cp::notepad::Tab& tab, cp::notepad::Sheet& sheet);

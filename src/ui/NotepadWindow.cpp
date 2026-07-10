@@ -163,6 +163,7 @@ void NotepadWindow::onTabDel(cp::notepad::NpId tabId)
         drawingTab_   = cp::notepad::INVALID_NPID;
         drawingSheet_ = cp::notepad::INVALID_NPID;
         scratchStroke_ = {};
+        erasedThisStroke_.clear();
     }
     notepad_.tabs.erase(
         std::remove_if(notepad_.tabs.begin(), notepad_.tabs.end(),
@@ -177,6 +178,27 @@ void NotepadWindow::netTabDel(cp::notepad::NpId tabId)
                  .u32(tabId)
                  .build();
     sendFn(std::move(frame));
+}
+
+void NotepadWindow::netStrokeDel(cp::notepad::NpId tabId,
+                                  cp::notepad::NpId sheetId,
+                                  cp::notepad::NpId strokeId)
+{
+    if (!sendFn) return;
+    auto frame = cp::proto::MsgBuilder(cp::proto::MsgType::NP_STROKE_DEL)
+                 .u32(tabId)
+                 .u32(sheetId)
+                 .u32(strokeId)
+                 .build();
+    sendFn(std::move(frame));
+}
+
+void NotepadWindow::onStrokeDel(cp::notepad::NpId tabId,
+                                 cp::notepad::NpId sheetId,
+                                 cp::notepad::NpId strokeId)
+{
+    cp::notepad::Sheet* sheet = notepad_.findSheet(tabId, sheetId);
+    if (sheet) sheet->removeStroke(strokeId);
 }
 
 void NotepadWindow::onSnapSheet(cp::notepad::NpId tabId,
@@ -213,6 +235,8 @@ void NotepadWindow::resetShared()
                        [](const cp::notepad::Tab& t){ return t.shared; }),
         notepad_.tabs.end());
     drawing_ = false;
+    scratchStroke_ = {};
+    erasedThisStroke_.clear();
     drawingTab_   = cp::notepad::INVALID_NPID;
     drawingSheet_ = cp::notepad::INVALID_NPID;
 }
@@ -421,64 +445,108 @@ bool NotepadWindow::renderCanvas(cp::notepad::Tab& tab, cp::notepad::Sheet& shee
     bool hovered = ImGui::IsItemHovered();
     bool active  = ImGui::IsItemActive();
 
+    // Safety reset: if the mouse was released while this canvas wasn't rendered
+    // (e.g. the user switched sheets), cancel any in-flight gesture.
+    if (drawing_ && drawingTab_ == tab.id && !ImGui::IsMouseDown(0)) {
+        drawing_ = false;
+        scratchStroke_ = {};
+        erasedThisStroke_.clear();
+    }
+
     if (hovered || active) {
         ImVec2 mp = ImGui::GetMousePos();
         float lx = mp.x - origin.x;
         float ly = mp.y - origin.y;
 
+        // Clamp to canvas bounds
+        float cx = lx < 0.f ? 0.f : (lx > sheet.w ? sheet.w : lx);
+        float cy = ly < 0.f ? 0.f : (ly > sheet.h ? sheet.h : ly);
+
         if (ImGui::IsMouseClicked(0) && hovered) {
-            // Start stroke
+            // Start a new drawing/erase gesture
             drawing_ = true;
             drawingTab_   = tab.id;
             drawingSheet_ = sheet.id;
             scratchStroke_ = {};
-            scratchStroke_.tool      = currentTool_;
-            scratchStroke_.thickness = currentThickness_;
 
-            cp::notepad::Point p0{lx, ly};
-            scratchStroke_.pts.push_back(p0);
+            if (currentTool_ == Tool::Eraser) {
+                erasedThisStroke_.clear();
+            } else {
+                scratchStroke_.tool      = currentTool_;
+                scratchStroke_.thickness = currentThickness_;
 
-            if (currentTool_ == Tool::Line || currentTool_ == Tool::Rect
-             || currentTool_ == Tool::Ellipse)
-                scratchStroke_.pts.push_back(p0); // placeholder p1
+                cp::notepad::Point p0{cx, cy};
+                scratchStroke_.pts.push_back(p0);
+
+                if (currentTool_ == Tool::Line || currentTool_ == Tool::Rect
+                 || currentTool_ == Tool::Ellipse)
+                    scratchStroke_.pts.push_back(p0); // placeholder p1
+            }
         }
 
         if (drawing_ && active && drawingTab_ == tab.id && drawingSheet_ == sheet.id) {
-            if (currentTool_ == Tool::Pen || currentTool_ == Tool::Eraser) {
-                // Accumulate polyline (cap at MAX_POINTS)
-                if (scratchStroke_.pts.size() < cp::notepad::Stroke::MAX_POINTS)
-                    scratchStroke_.pts.push_back({lx, ly});
+            if (currentTool_ == Tool::Eraser) {
+                // Smart eraser: hit-test every stroke against the current probe position
+                // and delete those that are touched.  Collect IDs first to avoid iterator
+                // invalidation while calling removeStroke().
+                float eRadius = currentThickness_ > 4.f ? currentThickness_ : 4.f;
+                cp::notepad::Point probe{lx, ly};  // use raw (unclipped) for hit-testing
+                std::vector<cp::notepad::NpId> toErase;
+                for (const auto& s : sheet.strokes) {
+                    if (!erasedThisStroke_.count(s.id)
+                        && cp::notepad::strokeHit(s, probe, eRadius))
+                        toErase.push_back(s.id);
+                }
+                for (auto eid : toErase) {
+                    erasedThisStroke_.insert(eid);
+                    sheet.removeStroke(eid);
+                    if (shared) netStrokeDel(tab.id, sheet.id, eid);
+                }
+            } else if (currentTool_ == Tool::Pen) {
+                // Accumulate polyline with distance filter (≥ 1.5 px) to reduce point spam
+                if (scratchStroke_.pts.size() < cp::notepad::Stroke::MAX_POINTS
+                    && !scratchStroke_.pts.empty())
+                {
+                    const auto& last = scratchStroke_.pts.back();
+                    float ddx = cx - last.x, ddy = cy - last.y;
+                    if (ddx*ddx + ddy*ddy >= 1.5f * 1.5f)
+                        scratchStroke_.pts.push_back({cx, cy});
+                }
             } else {
-                // Shape: update p1 in-place
+                // Shape (Line/Rect/Ellipse): update the second anchor point in-place
                 if (scratchStroke_.pts.size() >= 2)
-                    scratchStroke_.pts[1] = {lx, ly};
+                    scratchStroke_.pts[1] = {cx, cy};
             }
         }
 
         if (drawing_ && ImGui::IsMouseReleased(0) && drawingTab_ == tab.id) {
             drawing_ = false;
-            if (!scratchStroke_.pts.empty()) {
-                // Finalise stroke
+            if (currentTool_ == Tool::Eraser) {
+                erasedThisStroke_.clear();
+            } else if (!scratchStroke_.pts.empty()) {
+                // Finalise and commit the stroke
                 uint8_t myId3 = sess_ ? static_cast<uint8_t>(sess_->myId()) : 0;
                 scratchStroke_.id        = mintId();
                 scratchStroke_.colorRGBA = colorForParticipant(myId3);
-
-                // For eraser: use canvas background colour
-                if (scratchStroke_.tool == Tool::Eraser)
-                    scratchStroke_.colorRGBA = 0xFF1F1C1Au;
-
                 sheet.applyStroke(scratchStroke_);
-
                 if (shared)
                     netStrokeAdd(tab.id, sheet.id, scratchStroke_);
             }
             scratchStroke_ = {};
         }
+
+        // Eraser cursor preview: draw a circle at the mouse position when eraser is active
+        if (currentTool_ == Tool::Eraser) {
+            float eRadius = currentThickness_ > 4.f ? currentThickness_ : 4.f;
+            ImGui::GetForegroundDrawList()->AddCircle(
+                mp, eRadius, IM_COL32(200, 200, 200, 160), 24, 1.5f);
+        }
     } else if (drawing_ && drawingTab_ == tab.id && drawingSheet_ == sheet.id) {
-        // Mouse left the button area; cancel if mouse released
+        // Mouse left the button area while a gesture was in progress
         if (ImGui::IsMouseReleased(0)) {
             drawing_ = false;
             scratchStroke_ = {};
+            erasedThisStroke_.clear();
         }
     }
 

@@ -14,12 +14,14 @@ enum class DrType { UNKNOWN, INT, FLOAT, DOUBLE, INT_ARR, FLOAT_ARR, DATA };
 
 struct RegisteredDataref {
     uint16_t     index;
-    std::string  path;
+    std::string  path;       // original path from config (may contain [N] suffix)
     std::string  zoneId;
     SyncMode     mode;
-    XPLMDataRef  handle  = nullptr;
-    DrType       type    = DrType::UNKNOWN;
-    bool         writable= false;
+    XPLMDataRef  handle     = nullptr;
+    DrType       type       = DrType::UNKNOWN;
+    bool         writable   = false;
+    // ≥0: index into a float/int array dataref (path had [N] suffix); -1: scalar/whole array
+    int          arrayIndex = -1;
 };
 
 struct RegisteredCommand {

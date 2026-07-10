@@ -33,7 +33,15 @@ bool DrValue::approxEqual(const DrValue& o) const
     switch (type) {
         case DrType::INT:    return i == o.i;
         case DrType::FLOAT:  return std::fabs(f - o.f) < FLOAT_EPS;
-        case DrType::DOUBLE: return std::fabs(d - o.d) < DOUBLE_EPS;
+        case DrType::DOUBLE: {
+            // Use a relative epsilon so large values (lat/lon, nav frequencies) don't
+            // generate spurious sends.  DOUBLE_EPS (1e-9) stays as an absolute floor.
+            double diff = std::fabs(d - o.d);
+            double ad = std::fabs(d), ao = std::fabs(o.d);
+            double mag  = ad > ao ? ad : ao;
+            double eps  = 1e-7 * mag;
+            return diff <= (eps > DOUBLE_EPS ? eps : DOUBLE_EPS);
+        }
         case DrType::INT_ARR:
             if (ia.size() != o.ia.size()) return false;
             return memcmp(ia.data(), o.ia.data(), ia.size()*sizeof(int)) == 0;
@@ -71,8 +79,24 @@ DrValue SyncEngine::readDr(const RegisteredDataref& rd) const
     DrValue v;
     v.type = rd.type;
     switch (rd.type) {
-        case DrType::INT:    v.i = XPLMGetDatai(rd.handle); break;
-        case DrType::FLOAT:  v.f = XPLMGetDataf(rd.handle); break;
+        case DrType::INT:
+            if (rd.arrayIndex >= 0) {
+                int tmp = 0;
+                XPLMGetDatavi(rd.handle, &tmp, rd.arrayIndex, 1);
+                v.i = tmp;
+            } else {
+                v.i = XPLMGetDatai(rd.handle);
+            }
+            break;
+        case DrType::FLOAT:
+            if (rd.arrayIndex >= 0) {
+                float tmp = 0.f;
+                XPLMGetDatavf(rd.handle, &tmp, rd.arrayIndex, 1);
+                v.f = tmp;
+            } else {
+                v.f = XPLMGetDataf(rd.handle);
+            }
+            break;
         case DrType::DOUBLE: v.d = XPLMGetDatad(rd.handle); break;
         case DrType::INT_ARR: {
             int count = XPLMGetDatavi(rd.handle, nullptr, 0, 0);
@@ -107,8 +131,22 @@ void SyncEngine::writeDr(const RegisteredDataref& rd, const DrValue& val)
 {
     if (!rd.handle || !rd.writable) return;
     switch (rd.type) {
-        case DrType::INT:    XPLMSetDatai(rd.handle, val.i); break;
-        case DrType::FLOAT:  XPLMSetDataf(rd.handle, val.f); break;
+        case DrType::INT:
+            if (rd.arrayIndex >= 0) {
+                int tmp = val.i;
+                XPLMSetDatavi(rd.handle, &tmp, rd.arrayIndex, 1);
+            } else {
+                XPLMSetDatai(rd.handle, val.i);
+            }
+            break;
+        case DrType::FLOAT:
+            if (rd.arrayIndex >= 0) {
+                float tmp = val.f;
+                XPLMSetDatavf(rd.handle, &tmp, rd.arrayIndex, 1);
+            } else {
+                XPLMSetDataf(rd.handle, val.f);
+            }
+            break;
         case DrType::DOUBLE: XPLMSetDatad(rd.handle, val.d); break;
         case DrType::INT_ARR:
             if (!val.ia.empty())
@@ -149,7 +187,7 @@ void SyncEngine::refreshCache()
     const auto& drs = reg_->datarefs();
     for (size_t i = 0; i < drs.size() && i < cache_.size(); ++i) {
         const auto& rd = drs[i];
-        if (rd.handle && !cache_[i].echoSuppressed)
+        if (rd.handle && cache_[i].suppressFrames == 0)
             cache_[i].value = readDr(rd);
     }
 }
@@ -191,8 +229,11 @@ void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
 
         Cache& c = cache_[i];
 
-        if (c.echoSuppressed) {
-            c.echoSuppressed = false;
+        if (c.suppressFrames > 0) {
+            // While the suppress window is active, keep the cache up-to-date with the
+            // settling value so no spurious send occurs when the window expires.
+            --c.suppressFrames;
+            if (rd.handle) c.value = readDr(rd);
             continue;
         }
 
@@ -279,9 +320,14 @@ void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
     writeDr(*rd, val);
 
     if (drIndex < cache_.size()) {
-        cache_[drIndex].value = val;
-        // Suppress echo for 1 tick so we don't send this value back to the sender
-        cache_[drIndex].echoSuppressed = true;
+        // Read back the actual value after the write.  SASL may quantise/clamp the value
+        // synchronously; storing the post-write readback prevents the slightly different
+        // cached value from triggering a retransmit on the next tick.
+        cache_[drIndex].value = readDr(*rd);
+        // Suppress outbound sends for ~0.5 s (30 frames) so SASL side-effect cascades
+        // (fire-valve linking, etc.) have time to settle before we re-read and compare.
+        static constexpr int SUPPRESS_WINDOW = 30;
+        cache_[drIndex].suppressFrames = SUPPRESS_WINDOW;
     }
 }
 

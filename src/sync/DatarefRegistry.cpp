@@ -36,14 +36,42 @@ void DatarefRegistry::build(const std::vector<DatarefEntry>& drEntries,
         const auto& e = drEntries[i];
         RegisteredDataref rd;
         rd.index  = static_cast<uint16_t>(i);
-        rd.path   = e.path;
+        rd.path   = e.path;   // keep original (with [N]) for logging/hashing
         rd.zoneId = e.zoneId;
         rd.mode   = e.mode;
-        rd.handle = XPLMFindDataRef(e.path.c_str());
+
+        // Parse optional [N] array-index suffix (e.g. "mixture_ratio[0]").
+        // XPLMFindDataRef does not understand [N] — strip it and store the index.
+        std::string basePath = e.path;
+        {
+            size_t bk = e.path.rfind('[');
+            if (bk != std::string::npos && e.path.size() > bk + 1
+                && e.path.back() == ']')
+            {
+                int idx = 0;
+                bool valid = true;
+                for (size_t ci = bk + 1; ci < e.path.size() - 1; ++ci) {
+                    char ch = e.path[ci];
+                    if (ch < '0' || ch > '9') { valid = false; break; }
+                    idx = idx * 10 + (ch - '0');
+                }
+                if (valid) {
+                    rd.arrayIndex = idx;
+                    basePath = e.path.substr(0, bk);
+                }
+            }
+        }
+
+        rd.handle = XPLMFindDataRef(basePath.c_str());
         if (!rd.handle) {
             LogWarning("DatarefRegistry: not found: %s", e.path.c_str());
         } else {
             rd.type     = resolveType(rd.handle);
+            // If we're indexing into an array, treat the wire value as a scalar element.
+            if (rd.arrayIndex >= 0) {
+                if (rd.type == DrType::FLOAT_ARR)    rd.type = DrType::FLOAT;
+                else if (rd.type == DrType::INT_ARR) rd.type = DrType::INT;
+            }
             rd.writable = XPLMCanWriteDataRef(rd.handle) != 0;
         }
         datarefs_.push_back(std::move(rd));

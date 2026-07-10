@@ -50,6 +50,23 @@ void PhysicsSync::tick()
     if (amMaster && !wasPhysicsMaster_) {
         // Became physics master — discard state from the previous master.
         hasState_ = false;
+
+        // Clear the custom yoke datarefs that applyState() was writing so they
+        // don't conflict with the hardware once overrides are released.
+        auto clearFlt = [](const char* path) {
+            XPLMDataRef dr = XPLMFindDataRef(path);
+            if (dr) XPLMSetDataf(dr, 0.f);
+        };
+        clearFlt("sim/custom/controlls/yoke_roll");
+        clearFlt("sim/custom/controlls/yoke_pitch");
+        clearFlt("sim/custom/SC/yoke_roll_ratio");
+        clearFlt("sim/custom/SC/yoke_pitch_ratio");
+        clearFlt("sim/custom/SC/yoke_heading_ratio");
+        clearFlt("sim/cockpit2/controls/yoke_roll_ratio");
+        clearFlt("sim/cockpit2/controls/yoke_pitch_ratio");
+        clearFlt("sim/cockpit2/controls/yoke_heading_ratio");
+
+        Log("PhysicsSync: became physics master — cleared applyState overrides");
     }
     if (!amMaster && wasPhysicsMaster_) {
         // Lost master role — immediately block local joystick and planepath so there
@@ -152,12 +169,28 @@ void PhysicsSync::sendState()
     if (lBrRef) s.left_brake  = XPLMGetDataf(lBrRef);
     if (rBrRef) s.right_brake = XPLMGetDataf(rBrRef);
 
-    // Engine N2/N1 — sent directly so clients can write the indicator datarefs at 60 Hz,
-    // bypassing custom SASL engine models that may recompute from a blocked hardware throttle.
-    XPLMDataRef n2Ref = XPLMFindDataRef("sim/cockpit2/engine/indicators/N2_percent_pilot");
-    if (n2Ref) XPLMGetDatavf(n2Ref, s.engine_N2, 0, 8);
-    XPLMDataRef n1Ref = XPLMFindDataRef("sim/cockpit2/engine/indicators/N1_percent_pilot");
-    if (n1Ref) XPLMGetDatavf(n1Ref, s.engine_N1, 0, 8);
+    // Engine state: read the REAL flight-model datarefs (not just cockpit indicator copies)
+    // so clients can bypass their local (frozen) SASL engine model and show correct RPM.
+    // ENGN_N1_/N2_ are arrays; fall back to indicator copies if not available.
+    XPLMDataRef n2Real = XPLMFindDataRef("sim/flightmodel/engine/ENGN_N2_");
+    if (n2Real) XPLMGetDatavf(n2Real, s.engine_N2, 0, 8);
+    else {
+        XPLMDataRef n2Ind = XPLMFindDataRef("sim/cockpit2/engine/indicators/N2_percent_pilot");
+        if (n2Ind) XPLMGetDatavf(n2Ind, s.engine_N2, 0, 8);
+    }
+    XPLMDataRef n1Real = XPLMFindDataRef("sim/flightmodel/engine/ENGN_N1_");
+    if (n1Real) XPLMGetDatavf(n1Real, s.engine_N1, 0, 8);
+    else {
+        XPLMDataRef n1Ind = XPLMFindDataRef("sim/cockpit2/engine/indicators/N1_percent_pilot");
+        if (n1Ind) XPLMGetDatavf(n1Ind, s.engine_N1, 0, 8);
+    }
+    // Engine running flag (1 = running) so clients can force the engine into 'running' state.
+    XPLMDataRef engRun = XPLMFindDataRef("sim/flightmodel/engine/ENGN_running");
+    if (engRun) {
+        int running[8] = {};
+        XPLMGetDatavi(engRun, running, 0, 8);
+        for (int k = 0; k < 8; ++k) s.engine_running[k] = static_cast<uint8_t>(running[k]);
+    }
 
     net::UdpDatagram dg;
     dg.data.resize(sizeof(s));
@@ -307,12 +340,26 @@ void PhysicsSync::applyState(const proto::PhysicsState& s)
     wflt("sim/cockpit2/controls/left_brake_ratio",  s.left_brake);
     wflt("sim/cockpit2/controls/right_brake_ratio", s.right_brake);
 
-    // Engine N2/N1 — written at 60 Hz to override any SASL engine model that computes N2
-    // from a locally-blocked hardware throttle axis, giving clients correct gauge readings.
-    XPLMDataRef n2Ref = XPLMFindDataRef("sim/cockpit2/engine/indicators/N2_percent_pilot");
-    if (n2Ref) XPLMSetDatavf(n2Ref, const_cast<float*>(s.engine_N2), 0, 8);
-    XPLMDataRef n1Ref = XPLMFindDataRef("sim/cockpit2/engine/indicators/N1_percent_pilot");
-    if (n1Ref) XPLMSetDatavf(n1Ref, const_cast<float*>(s.engine_N1), 0, 8);
+    // Engine N2/N1 — written at 60 Hz to the REAL flight-model datarefs so that
+    // X-Plane's engine simulation (and any SASL model reading them) sees the master's RPM.
+    // Also update the cockpit indicator copies so the gauges reflect the correct values.
+    XPLMDataRef n2Real = XPLMFindDataRef("sim/flightmodel/engine/ENGN_N2_");
+    if (n2Real) XPLMSetDatavf(n2Real, const_cast<float*>(s.engine_N2), 0, 8);
+    XPLMDataRef n2Ind = XPLMFindDataRef("sim/cockpit2/engine/indicators/N2_percent_pilot");
+    if (n2Ind) XPLMSetDatavf(n2Ind, const_cast<float*>(s.engine_N2), 0, 8);
+
+    XPLMDataRef n1Real = XPLMFindDataRef("sim/flightmodel/engine/ENGN_N1_");
+    if (n1Real) XPLMSetDatavf(n1Real, const_cast<float*>(s.engine_N1), 0, 8);
+    XPLMDataRef n1Ind = XPLMFindDataRef("sim/cockpit2/engine/indicators/N1_percent_pilot");
+    if (n1Ind) XPLMSetDatavf(n1Ind, const_cast<float*>(s.engine_N1), 0, 8);
+
+    // Force engine running state so the client's flight model treats them as started.
+    XPLMDataRef engRun = XPLMFindDataRef("sim/flightmodel/engine/ENGN_running");
+    if (engRun) {
+        int running[8];
+        for (int k = 0; k < 8; ++k) running[k] = s.engine_running[k] ? 1 : 0;
+        XPLMSetDatavi(engRun, running, 0, 8);
+    }
 }
 
 }

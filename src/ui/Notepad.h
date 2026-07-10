@@ -4,6 +4,7 @@
 #include <vector>
 #include <unordered_set>
 #include <algorithm>
+#include <cmath>
 
 // ---------------------------------------------------------------------------
 // Notepad / whiteboard shared data model.
@@ -92,6 +93,17 @@ struct Sheet {
         strokes.push_back(std::move(s));
         return true;
     }
+
+    // Remove stroke by ID (smart eraser).  Returns true if found and removed.
+    bool removeStroke(NpId id)
+    {
+        auto it = std::find_if(strokes.begin(), strokes.end(),
+                               [id](const Stroke& s){ return s.id == id; });
+        if (it == strokes.end()) return false;
+        strokes.erase(it);
+        strokeIds.erase(id);
+        return true;
+    }
 };
 
 // A named collection of sheets.  shared==false means private/local (never networked).
@@ -146,6 +158,79 @@ struct Notepad {
 
     void clear() { tabs.clear(); }
 };
+
+// ---------------------------------------------------------------------------
+// Smart-eraser helpers (no ImGui / XPLM dependency)
+// ---------------------------------------------------------------------------
+
+// Minimum distance from point P to the finite line segment AB (2-D).
+inline float pointSegDist(Point p, Point a, Point b)
+{
+    float dx = b.x - a.x, dy = b.y - a.y;
+    float lenSq = dx*dx + dy*dy;
+    if (lenSq < 1e-6f) {
+        float ex = p.x - a.x, ey = p.y - a.y;
+        return std::sqrt(ex*ex + ey*ey);
+    }
+    float t = ((p.x - a.x)*dx + (p.y - a.y)*dy) / lenSq;
+    if (t < 0.f) t = 0.f; else if (t > 1.f) t = 1.f;
+    float qx = a.x + t*dx - p.x, qy = a.y + t*dy - p.y;
+    return std::sqrt(qx*qx + qy*qy);
+}
+
+// Returns true if probe is within (radius + stroke.thickness/2) of any part of stroke.
+inline bool strokeHit(const Stroke& stroke, Point probe, float radius)
+{
+    if (stroke.pts.empty()) return false;
+    float thresh = radius + stroke.thickness * 0.5f;
+
+    switch (stroke.tool) {
+    case Tool::Pen:
+    case Tool::Eraser:
+    case Tool::Line: {
+        size_t end = (stroke.tool == Tool::Line) ? 2 : stroke.pts.size();
+        if (end > stroke.pts.size()) end = stroke.pts.size();
+        if (end == 1) {
+            float dx = probe.x - stroke.pts[0].x, dy = probe.y - stroke.pts[0].y;
+            return std::sqrt(dx*dx + dy*dy) <= thresh;
+        }
+        for (size_t i = 1; i < end; ++i)
+            if (pointSegDist(probe, stroke.pts[i-1], stroke.pts[i]) <= thresh)
+                return true;
+        return false;
+    }
+    case Tool::Rect:
+        if (stroke.pts.size() < 2) return false;
+        {
+            Point tl = stroke.pts[0], br = stroke.pts[1];
+            Point tr{br.x, tl.y}, bl{tl.x, br.y};
+            return pointSegDist(probe, tl, tr) <= thresh
+                || pointSegDist(probe, tr, br) <= thresh
+                || pointSegDist(probe, br, bl) <= thresh
+                || pointSegDist(probe, bl, tl) <= thresh;
+        }
+    case Tool::Ellipse:
+        if (stroke.pts.size() < 2) return false;
+        {
+            float cx = (stroke.pts[0].x + stroke.pts[1].x) * 0.5f;
+            float cy = (stroke.pts[0].y + stroke.pts[1].y) * 0.5f;
+            float rx = std::fabs(stroke.pts[1].x - stroke.pts[0].x) * 0.5f;
+            float ry = std::fabs(stroke.pts[1].y - stroke.pts[0].y) * 0.5f;
+            constexpr int SEGS = 48;
+            constexpr float PI2 = 6.28318530718f;
+            Point prev{cx + rx, cy};
+            for (int i = 1; i <= SEGS; ++i) {
+                float ang = PI2 * static_cast<float>(i) / SEGS;
+                Point cur{cx + rx * std::cos(ang), cy + ry * std::sin(ang)};
+                if (pointSegDist(probe, prev, cur) <= thresh) return true;
+                prev = cur;
+            }
+            return false;
+        }
+    default:
+        return false;
+    }
+}
 
 } // namespace notepad
 } // namespace cp
