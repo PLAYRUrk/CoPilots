@@ -446,8 +446,10 @@ bool NotepadWindow::renderCanvas(cp::notepad::Tab& tab, cp::notepad::Sheet& shee
     bool active  = ImGui::IsItemActive();
 
     // Safety reset: if the mouse was released while this canvas wasn't rendered
-    // (e.g. the user switched sheets), cancel any in-flight gesture.
-    if (drawing_ && drawingTab_ == tab.id && !ImGui::IsMouseDown(0)) {
+    // (e.g. the user switched sheets mid-gesture), cancel the in-flight gesture.
+    // Guard against IsMouseReleased so we don't stomp the commit block below on the
+    // normal release frame (IsMouseDown is already false on that same frame).
+    if (drawing_ && drawingTab_ == tab.id && !ImGui::IsMouseDown(0) && !ImGui::IsMouseReleased(0)) {
         drawing_ = false;
         scratchStroke_ = {};
         erasedThisStroke_.clear();
@@ -675,15 +677,20 @@ void NotepadWindow::renderContent()
                     ImGui::SameLine();
                 }
 
-                // Rename tab (owner only)
+                // Rename tab (owner only).
+                // Reload the buffer whenever the active tab changes so we don't show the
+                // previous tab's name in the field.
                 if (isTabOwner) {
-                    if (tabNameBuf_[0] == '\0')
+                    if (renameTabId_ != tab.id) {
                         strncpy(tabNameBuf_, tab.name.c_str(), sizeof(tabNameBuf_) - 1);
+                        tabNameBuf_[sizeof(tabNameBuf_) - 1] = '\0';
+                        renameTabId_ = tab.id;
+                    }
                     ImGui::SetNextItemWidth(110.f);
                     if (ImGui::InputText("##tabname", tabNameBuf_, sizeof(tabNameBuf_),
                                          ImGuiInputTextFlags_EnterReturnsTrue)) {
                         tab.name = tabNameBuf_;
-                        tabNameBuf_[0] = '\0';
+                        // Keep renameTabId_ == tab.id; buffer already matches.
                     }
                     ImGui::SameLine();
                 }
@@ -718,10 +725,12 @@ void NotepadWindow::renderContent()
                 } else {
                     if (ImGui::BeginTabBar("##np_sheets")) {
                         NpId toDeleteSheet = INVALID_NPID;
+                        int sheetIdx = 0;
                         for (auto& sheet : tab.sheets) {
+                            ++sheetIdx;
                             char sheetLabel[48];
                             snprintf(sheetLabel, sizeof(sheetLabel),
-                                     "Sheet %u##%u", npOwner(sheet.id), sheet.id);
+                                     "Sheet %d##%u", sheetIdx, sheet.id);
 
                             if (ImGui::BeginTabItem(sheetLabel)) {
                                 tab.activeSheet = sheet.id;

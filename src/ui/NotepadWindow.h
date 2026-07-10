@@ -100,9 +100,12 @@ private:
     cp::notepad::Tool currentTool_      = cp::notepad::Tool::Pen;
     float             currentThickness_ = 2.f;
 
-    // Tab / sheet rename buffer
-    char tabNameBuf_[64]   = {};
-    char sheetNameBuf_[32] = {};
+    // Tab / sheet rename buffer.
+    // renameTabId_ tracks which tab currently occupies tabNameBuf_ so we can
+    // reload the buffer when the user switches to a different tab.
+    char              tabNameBuf_[64]   = {};
+    char              sheetNameBuf_[32] = {};
+    cp::notepad::NpId renameTabId_      = cp::notepad::INVALID_NPID;
 
     // ── Private helpers ──────────────────────────────────────────────────────
     cp::notepad::NpId mintId();  // makeNpId(myId(), npCounter_++)

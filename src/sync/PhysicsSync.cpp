@@ -233,9 +233,19 @@ void PhysicsSync::onUdpDatagram(const uint8_t* data, size_t len)
 
 void PhysicsSync::applyState(const proto::PhysicsState& s)
 {
-    // Enable flight model override so X-Plane lets us drive position
-    XPLMDataRef overrideRef = XPLMFindDataRef("sim/operation/override/override_planepath");
-    if (overrideRef) { int v = 1; XPLMSetDatavi(overrideRef, &v, 0, 1); }
+    // NOTE: override_planepath is intentionally NOT set here.
+    //
+    // Setting override_planepath=1 freezes the local flight-model, which prevents the
+    // client's engine/systems simulation (including SASL custom models on aircraft like
+    // the Tu-154) from running.  Result: engines never spin up on clients until control
+    // is handed over and the freeze is lifted.
+    //
+    // Instead we rely on continuous hard-writes of position/attitude/velocity (below)
+    // at 60 Hz to keep the client aircraft in sync with the master, while letting the
+    // local flight-model run freely so engines, hydraulics, etc. behave correctly.
+    //
+    // override_planepath=1 is still applied during the "gap" period (no UDP state yet)
+    // in tick() — see the !hasState_ branch there.
 
     // lat/lon/alt datarefs are read-only without override; use local OpenGL coords instead
     double lx, ly, lz;
@@ -340,26 +350,14 @@ void PhysicsSync::applyState(const proto::PhysicsState& s)
     wflt("sim/cockpit2/controls/left_brake_ratio",  s.left_brake);
     wflt("sim/cockpit2/controls/right_brake_ratio", s.right_brake);
 
-    // Engine N2/N1 — written at 60 Hz to the REAL flight-model datarefs so that
-    // X-Plane's engine simulation (and any SASL model reading them) sees the master's RPM.
-    // Also update the cockpit indicator copies so the gauges reflect the correct values.
-    XPLMDataRef n2Real = XPLMFindDataRef("sim/flightmodel/engine/ENGN_N2_");
-    if (n2Real) XPLMSetDatavf(n2Real, const_cast<float*>(s.engine_N2), 0, 8);
-    XPLMDataRef n2Ind = XPLMFindDataRef("sim/cockpit2/engine/indicators/N2_percent_pilot");
-    if (n2Ind) XPLMSetDatavf(n2Ind, const_cast<float*>(s.engine_N2), 0, 8);
-
-    XPLMDataRef n1Real = XPLMFindDataRef("sim/flightmodel/engine/ENGN_N1_");
-    if (n1Real) XPLMSetDatavf(n1Real, const_cast<float*>(s.engine_N1), 0, 8);
-    XPLMDataRef n1Ind = XPLMFindDataRef("sim/cockpit2/engine/indicators/N1_percent_pilot");
-    if (n1Ind) XPLMSetDatavf(n1Ind, const_cast<float*>(s.engine_N1), 0, 8);
-
-    // Force engine running state so the client's flight model treats them as started.
-    XPLMDataRef engRun = XPLMFindDataRef("sim/flightmodel/engine/ENGN_running");
-    if (engRun) {
-        int running[8];
-        for (int k = 0; k < 8; ++k) running[k] = s.engine_running[k] ? 1 : 0;
-        XPLMSetDatavi(engRun, running, 0, 8);
-    }
+    // Engine N1/N2/running are intentionally NOT overridden here.
+    //
+    // With override_planepath removed, the local flight-model runs freely and computes
+    // its own engine state from the already-synced fuel, throttle, and start commands.
+    // Writing N1/N2 over the top would fight the live SASL simulation (Tu-154) and
+    // produce RPM oscillation rather than fixing it.  The PhysicsState still carries
+    // engine_N1/N2/running (transmitted but now unused on the receive side); they remain
+    // in the struct so sendState() can evolve without a protocol break.
 }
 
 }

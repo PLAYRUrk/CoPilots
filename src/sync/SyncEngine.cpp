@@ -15,13 +15,16 @@ static constexpr double DOUBLE_EPS = 1e-9;
 // echoed back to the master, creating an oscillation that freezes the yoke.
 static bool isPhysicsOnlyDr(const std::string& path)
 {
-    auto startsWith = [&](const char* prefix, size_t n) {
-        return path.size() > n && path.compare(0, n, prefix, n) == 0;
+    // Use strlen so the compiler derives the correct length from the string
+    // literal — avoids the off-by-one bugs that arise from hand-counted magic numbers.
+    auto startsWith = [&](const char* prefix) {
+        size_t n = std::strlen(prefix);
+        return path.size() >= n && path.compare(0, n, prefix, n) == 0;
     };
-    if (startsWith("sim/joystick/yoke_",           19)) return true;
-    if (startsWith("sim/cockpit2/controls/yoke_",  27)) return true;
-    if (startsWith("sim/custom/controlls/yoke_",   26)) return true;
-    if (startsWith("sim/custom/SC/yoke_",          19)) return true;
+    if (startsWith("sim/joystick/yoke_"))           return true;  // 18 chars
+    if (startsWith("sim/cockpit2/controls/yoke_"))  return true;  // 27 chars
+    if (startsWith("sim/custom/controlls/yoke_"))   return true;  // 26 chars
+    if (startsWith("sim/custom/SC/yoke_"))          return true;  // 19 chars
     if (path == "sim/operation/override/override_joystick")  return true;
     if (path == "sim/operation/override/override_planepath") return true;
     return false;
@@ -298,9 +301,15 @@ void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
     }
 
     static int applyLog = 0;
-    if (++applyLog <= 10 || applyLog % 600 == 0)
-        Log("SyncEngine::applyIncoming idx=%u zone=%s writable=%d sender=%u",
-            drIndex, rd->zoneId.c_str(), (int)rd->writable, senderParticipantId);
+    if (++applyLog <= 10 || applyLog % 600 == 0) {
+        // Log path and value to help diagnose which datarefs flow through TCP
+        // (e.g. fire_valve linking, yoke leak) without scanning by index.
+        float fval = (val.type == DrType::FLOAT) ? val.f
+                   : (val.type == DrType::INT)   ? (float)val.i : 0.f;
+        Log("SyncEngine::applyIncoming idx=%u path=%s zone=%s val=%.4f writable=%d sender=%u",
+            drIndex, rd->path.c_str(), rd->zoneId.c_str(),
+            fval, (int)rd->writable, senderParticipantId);
+    }
 
     // Extra log for yoke/override datarefs to diagnose animation issues
     {
