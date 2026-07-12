@@ -16,6 +16,10 @@ struct ConnectionConfig {
     uint16_t    port     = 56900;
     bool        asHost   = true;
     std::string password = "";
+    // Local interface IP to bind the host sockets to. Empty = all interfaces.
+    // Selecting the physical adapter's IP routes traffic around an active VPN
+    // (strong-host model), so router port-forwarding keeps working.
+    std::string bindIp   = "";
     bool        requireJoinApproval    = true;
     bool        requireControlApproval = true;
 };
@@ -86,6 +90,11 @@ private:
     char portBuf_[8]    = "56900";
     char addrBuf_[272]  = "127.0.0.1:56900";
     char passBuf_[64]   = "";
+
+    // Interface picker for the Host tab (bind IP). Lazily filled on first render.
+    std::vector<std::string> bindIps_;
+    bool                     bindIpsLoaded_ = false;
+    int                      bindIpSel_     = 0;   // 0 = Auto (all interfaces)
 
     // Pending joins (host)
     std::vector<PendingJoin> pendingJoins_;

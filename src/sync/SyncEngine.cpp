@@ -109,30 +109,55 @@ static bool classifyAsOutput(const RegisteredDataref& rd, bool isAutoZone)
 }
 
 // Returns true for datarefs that PhysicsSync manages exclusively via UDP.
-// Syncing these via TCP as well would cause UDP writes on clients to be
-// echoed back to the master, creating an oscillation that freezes the yoke.
+// Syncing these via TCP as well causes dual-write conflicts or echo loops.
 static bool isPhysicsOnlyDr(const std::string& path)
 {
-    // Use strlen so the compiler derives the correct length from the string
-    // literal — avoids the off-by-one bugs that arise from hand-counted magic numbers.
     auto startsWith = [&](const char* prefix) {
         size_t n = std::strlen(prefix);
         return path.size() >= n && path.compare(0, n, prefix, n) == 0;
     };
-    if (startsWith("sim/joystick/yoke_"))           return true;  // 18 chars
-    if (startsWith("sim/cockpit2/controls/yoke_"))  return true;  // 27 chars
-    if (startsWith("sim/custom/controlls/yoke_"))   return true;  // 26 chars
-    if (startsWith("sim/custom/SC/yoke_"))          return true;  // 19 chars
+    auto hasToken = [&](const char* tok) -> bool {
+        return path.find(tok) != std::string::npos;
+    };
+
+    // Yoke and override datarefs — exclusively driven by PhysicsSync via UDP.
+    // Sending via TCP causes the UDP write on clients to be picked up as a
+    // "local change" on the next tick and echoed back, oscillating the yoke.
+    if (startsWith("sim/joystick/yoke_"))           return true;
+    if (startsWith("sim/cockpit2/controls/yoke_"))  return true;
+    if (startsWith("sim/custom/controlls/yoke_"))   return true;
+    if (startsWith("sim/custom/SC/yoke_"))          return true;
     if (path == "sim/operation/override/override_joystick")  return true;
     if (path == "sim/operation/override/override_planepath") return true;
-    // Gang controls: writing these sets ALL engines simultaneously, overriding
-    // per-engine values already synced individually via smartcopilot.cfg.
-    // mixture_ratio_all in the _AUTO zone would gang all fuel cutoff levers on
-    // the client even when the host moved only one — the individual [N] datarefs
-    // from the SHARED zone carry the correct per-engine state instead.
-    if (path == "sim/cockpit2/engine/actuators/mixture_ratio_all")  return true;
-    if (path == "sim/cockpit2/engine/actuators/throttle_ratio_all") return true;
-    if (path == "sim/cockpit2/engine/actuators/prop_ratio_all")     return true;
+
+    // Throttle levers, prop pitch, and thrust reversers — synced exclusively
+    // via UDP (applyState, ~60 Hz).  Adding a parallel TCP channel produces a
+    // dual-write conflict: tick() samples throttle at one point in the flight
+    // loop and sendState() samples it again slightly later; during active lever
+    // movement these two samples differ, so non-masters receive inconsistent
+    // values from both channels and the rendered lever oscillates.  All engine
+    // actuator tokens (including *_all gang variants) are covered by hasToken.
+    if (hasToken("throttle_ratio") || hasToken("prop_ratio") || hasToken("thrust_reverser"))
+        return true;
+
+    // The ENTIRE engine-actuator throttle family must be UDP-only, not just
+    // "throttle_ratio": X-Plane derives throttle_beta_rev_ratio and
+    // throttle_jet_rev_ratio (+ _all gang variants) from throttle_ratio every
+    // flight-model frame.  On a non-master, applyState() writes throttle_ratio,
+    // the flight model then updates the derived datarefs BETWEEN flight-loop
+    // callbacks (after refreshCache already ran), so tick() sees them as local
+    // user changes and echoes the stale values back to the master via TCP —
+    // snapping the master's levers back and producing the throttle jitter loop.
+    // A prefix match (not hasToken("throttle")) is used so autopilot switches
+    // like sim/cockpit2/autopilot/autothrottle_on keep syncing via TCP.
+    if (startsWith("sim/cockpit2/engine/actuators/throttle"))
+        return true;
+
+    // mixture_ratio_all: gang write sets ALL engines at once, overriding
+    // per-engine values already correctly delivered by UDP.
+    if (path == "sim/cockpit2/engine/actuators/mixture_ratio_all")
+        return true;
+
     return false;
 }
 
@@ -301,9 +326,9 @@ void SyncEngine::refreshCache()
         // wire value that was just received; overwriting it with the live SASL readback
         // would cause tick() to compare SASL-vs-SASL (always equal) and never detect
         // the real applied value — defeating echo suppression entirely.
-        // PhysicsSync-written datarefs (throttle, brake, flap) are also received via
-        // TCP, so they have echoFrames > 0 and are skipped here; the UDP and TCP values
-        // come from the same master and are close enough that no spurious send occurs.
+        // Note: throttle/prop/reverser are now isPhysicsOnlyDr (UDP-only), so they
+        // never pass through applyIncoming and always have echoFrames == 0; they are
+        // read back here normally, but tick() skips them before the cache is used.
         if (cache_[i].echoFrames > 0) continue;
         cache_[i].value = readDr(rd);
     }
@@ -348,7 +373,8 @@ void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
             continue;
         if (isAutoZone || isSharedZone || smartCopilotMode_) {
             if (classifyAsOutput(rd, isAutoZone)) {
-                // OUTPUT dataref: only the physics master is the authoritative source.
+                // OUTPUT datarefs (simulation-computed values): only the physics
+                // master is the authoritative sender.
                 iOwn = session_->isPhysicsMaster();
             } else {
                 // INPUT dataref: any crew member may send cockpit switch/knob changes.
@@ -447,8 +473,8 @@ void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
         bool isAutoZone = (rd->zoneId == AUTO_ZONE_ID);
         if (classifyAsOutput(*rd, isAutoZone)) {
             if (session_->isPhysicsMaster())
-                return;  // I'm the master; I produce OUTPUT, I don't consume it.
-            // Non-master: accept OUTPUT from the physics master.
+                return;  // I'm the master; I produce these, I don't consume them.
+            // Non-master: accept OUTPUT datarefs from the physics master only.
             // senderParticipantId==0 means the message was relayed by the host whose
             // authority was already verified on that end — trust the relay.
             ParticipantId masterId = session_->physicsMasterId();

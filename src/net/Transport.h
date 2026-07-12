@@ -29,7 +29,11 @@ namespace net {
 bool InitNetwork();
 void ShutdownNetwork();
 
-SocketHandle TcpListen(uint16_t port, int backlog = 8);
+// bindIp: optional local interface IP to bind to (empty = INADDR_ANY).
+// Binding to a physical adapter's IP makes Windows (strong-host model) route
+// replies out through that adapter, bypassing an active VPN's default route —
+// so router port-forwarding keeps working while a VPN is up.
+SocketHandle TcpListen(uint16_t port, int backlog = 8, const std::string& bindIp = {});
 
 SocketHandle TcpAccept(SocketHandle listener);
 
@@ -48,7 +52,10 @@ struct UdpEndpoint {
     uint16_t    port = 0;
 };
 
-SocketHandle UdpBind(uint16_t port);
+SocketHandle UdpBind(uint16_t port, const std::string& bindIp = {});
+
+// Enumerates local IPv4 addresses (excluding loopback) for the interface picker.
+std::vector<std::string> ListLocalIPv4();
 
 bool UdpSendTo(SocketHandle sock, const uint8_t* data, size_t len,
                const UdpEndpoint& to);

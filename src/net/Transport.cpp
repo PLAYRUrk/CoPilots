@@ -1,5 +1,6 @@
 #include "Transport.h"
 #include "../Log.h"
+#include <algorithm>
 
 #ifdef _WIN32
   #pragma comment(lib, "ws2_32.lib")
@@ -72,7 +73,22 @@ void CloseSocket(SocketHandle sock)
 #endif
 }
 
-SocketHandle TcpListen(uint16_t port, int backlog)
+// Fills addr.sin_addr from bindIp, or INADDR_ANY when empty/invalid.
+// Returns false (and logs) if bindIp is non-empty but unparseable.
+static bool ResolveBindAddr(const std::string& bindIp, sockaddr_in& addr)
+{
+    if (bindIp.empty()) {
+        addr.sin_addr.s_addr = INADDR_ANY;
+        return true;
+    }
+    if (inet_pton(AF_INET, bindIp.c_str(), &addr.sin_addr) != 1) {
+        LogError("ResolveBindAddr: invalid bind IP '%s'", bindIp.c_str());
+        return false;
+    }
+    return true;
+}
+
+SocketHandle TcpListen(uint16_t port, int backlog, const std::string& bindIp)
 {
     SocketHandle s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (s == INVALID_SOCK) {
@@ -85,12 +101,16 @@ SocketHandle TcpListen(uint16_t port, int backlog)
                reinterpret_cast<const char*>(&opt), sizeof(opt));
 
     sockaddr_in addr{};
-    addr.sin_family      = AF_INET;
-    addr.sin_port        = htons(port);
-    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_family = AF_INET;
+    addr.sin_port   = htons(port);
+    if (!ResolveBindAddr(bindIp, addr)) {
+        CloseSocket(s);
+        return INVALID_SOCK;
+    }
 
     if (bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
-        LogError("TcpListen: bind() port %u failed err=%d", port, LastError());
+        LogError("TcpListen: bind() %s:%u failed err=%d",
+                 bindIp.empty() ? "0.0.0.0" : bindIp.c_str(), port, LastError());
         CloseSocket(s);
         return INVALID_SOCK;
     }
@@ -100,7 +120,7 @@ SocketHandle TcpListen(uint16_t port, int backlog)
         return INVALID_SOCK;
     }
     SetNonBlocking(s);
-    Log("TCP listening on port %u", port);
+    Log("TCP listening on %s:%u", bindIp.empty() ? "0.0.0.0" : bindIp.c_str(), port);
     return s;
 }
 
@@ -200,7 +220,7 @@ int TcpRecv(SocketHandle sock, uint8_t* buf, int bufLen)
     return n;
 }
 
-SocketHandle UdpBind(uint16_t port)
+SocketHandle UdpBind(uint16_t port, const std::string& bindIp)
 {
     SocketHandle s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (s == INVALID_SOCK) {
@@ -211,16 +231,44 @@ SocketHandle UdpBind(uint16_t port)
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR,
                reinterpret_cast<const char*>(&opt), sizeof(opt));
     sockaddr_in addr{};
-    addr.sin_family      = AF_INET;
-    addr.sin_port        = htons(port);
-    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_family = AF_INET;
+    addr.sin_port   = htons(port);
+    if (!ResolveBindAddr(bindIp, addr)) {
+        CloseSocket(s);
+        return INVALID_SOCK;
+    }
     if (bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
-        LogError("UdpBind: bind() port %u failed err=%d", port, LastError());
+        LogError("UdpBind: bind() %s:%u failed err=%d",
+                 bindIp.empty() ? "0.0.0.0" : bindIp.c_str(), port, LastError());
         CloseSocket(s);
         return INVALID_SOCK;
     }
     SetNonBlocking(s);
     return s;
+}
+
+std::vector<std::string> ListLocalIPv4()
+{
+    std::vector<std::string> ips;
+    char hostname[256] = {};
+    if (gethostname(hostname, sizeof(hostname)) != 0) return ips;
+
+    addrinfo hints{}, *res = nullptr;
+    hints.ai_family   = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(hostname, nullptr, &hints, &res) != 0 || !res) return ips;
+
+    for (auto* ai = res; ai != nullptr; ai = ai->ai_next) {
+        auto* sa = reinterpret_cast<sockaddr_in*>(ai->ai_addr);
+        char buf[64];
+        if (!inet_ntop(AF_INET, &sa->sin_addr, buf, sizeof(buf))) continue;
+        std::string ip = buf;
+        if (ip.compare(0, 4, "127.") == 0) continue;  // skip loopback
+        if (std::find(ips.begin(), ips.end(), ip) == ips.end())
+            ips.push_back(ip);
+    }
+    freeaddrinfo(res);
+    return ips;
 }
 
 bool UdpSendTo(SocketHandle sock, const uint8_t* data, size_t len,

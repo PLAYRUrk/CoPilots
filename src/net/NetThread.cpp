@@ -20,7 +20,7 @@ static uint64_t NowMs()
         duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
 }
 
-bool NetThread::startServer(uint16_t tcpPort, uint16_t udpPort)
+bool NetThread::startServer(uint16_t tcpPort, uint16_t udpPort, const std::string& bindIp)
 {
     isServer_ = true;
     stopFlag_ = false;
@@ -28,8 +28,8 @@ bool NetThread::startServer(uint16_t tcpPort, uint16_t udpPort)
     connected = false;
     hasError  = false;
 
-    thread_ = std::thread([this, tcpPort, udpPort]() {
-        serverLoop(tcpPort, udpPort);
+    thread_ = std::thread([this, tcpPort, udpPort, bindIp]() {
+        serverLoop(tcpPort, udpPort, bindIp);
     });
     return true;
 }
@@ -56,19 +56,20 @@ void NetThread::stop()
     connected = false;
 }
 
-void NetThread::serverLoop(uint16_t tcpPort, uint16_t udpPort)
+void NetThread::serverLoop(uint16_t tcpPort, uint16_t udpPort, const std::string& bindIp)
 {
     running = true;
-    Log("NetThread(server): starting on TCP:%u UDP:%u", tcpPort, udpPort);
+    Log("NetThread(server): starting on TCP:%u UDP:%u bind=%s",
+        tcpPort, udpPort, bindIp.empty() ? "any" : bindIp.c_str());
 
-    SocketHandle listener = TcpListen(tcpPort);
+    SocketHandle listener = TcpListen(tcpPort, 8, bindIp);
     if (listener == INVALID_SOCK) {
         lastError = "Failed to bind TCP port";
         hasError  = true;
         running   = false;
         return;
     }
-    SocketHandle udpSock = UdpBind(udpPort);
+    SocketHandle udpSock = UdpBind(udpPort, bindIp);
     if (udpSock == INVALID_SOCK) {
         lastError = "Failed to bind UDP port";
         hasError  = true;

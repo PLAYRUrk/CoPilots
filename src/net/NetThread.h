@@ -76,14 +76,16 @@ public:
     std::atomic<bool> hasError   {false};
     std::string       lastError;
 
-    bool startServer(uint16_t tcpPort, uint16_t udpPort);
+    // bindIp: optional local interface IP the server sockets bind to (empty =
+    // all interfaces). Lets the host bypass an active VPN — see Transport.h.
+    bool startServer(uint16_t tcpPort, uint16_t udpPort, const std::string& bindIp = {});
     bool startClient(const std::string& host, uint16_t tcpPort, uint16_t udpPort);
     void stop();
 
     ~NetThread() { stop(); }
 
 private:
-    void serverLoop(uint16_t tcpPort, uint16_t udpPort);
+    void serverLoop(uint16_t tcpPort, uint16_t udpPort, const std::string& bindIp);
     void clientLoop(const std::string& host, uint16_t tcpPort, uint16_t udpPort);
 
     std::thread               thread_;

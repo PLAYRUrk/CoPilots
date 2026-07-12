@@ -1,5 +1,10 @@
 #include "ConnectionWindow.h"
 #include "Theme.h"
+
+// Forward declaration instead of including Transport.h: that header pulls in
+// winsock2.h, which conflicts with the winsock.h already included transitively
+// via the XPLM/windows.h chain in this translation unit.
+namespace cp { namespace net { std::vector<std::string> ListLocalIPv4(); } }
 #include <imgui.h>
 #include <cstdio>
 #include <cstring>
@@ -128,6 +133,39 @@ void ConnectionWindow::renderConnectForm()
             if (ImGui::InputText("##port", portBuf_, sizeof(portBuf_),
                                  ImGuiInputTextFlags_CharsDecimal))
                 connCfg_.port = static_cast<uint16_t>(std::atoi(portBuf_));
+
+            // Network interface picker: binding the host sockets to a physical
+            // adapter's IP routes traffic around an active VPN (strong-host model),
+            // so router port-forwarding keeps working while the VPN is up.
+            ImGui::Spacing();
+            ImGui::Text("Network interface");
+            if (!bindIpsLoaded_) {
+                bindIps_ = cp::net::ListLocalIPv4();
+                bindIpsLoaded_ = true;
+            }
+            {
+                const char* preview = (bindIpSel_ == 0 ||
+                                       bindIpSel_ > (int)bindIps_.size())
+                    ? "Auto (all interfaces)"
+                    : bindIps_[bindIpSel_ - 1].c_str();
+                ImGui::SetNextItemWidth(200.f);
+                if (ImGui::BeginCombo("##bindip", preview)) {
+                    if (ImGui::Selectable("Auto (all interfaces)", bindIpSel_ == 0)) {
+                        bindIpSel_ = 0;
+                        connCfg_.bindIp.clear();
+                    }
+                    for (int i = 0; i < (int)bindIps_.size(); ++i) {
+                        if (ImGui::Selectable(bindIps_[i].c_str(), bindIpSel_ == i + 1)) {
+                            bindIpSel_ = i + 1;
+                            connCfg_.bindIp = bindIps_[i];
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Pick your LAN adapter's IP to bypass an active VPN\n"
+                                      "(needed for router port-forwarding to work).");
+            }
 
             ImGui::Spacing();
             ImGui::Text("Lobby Password (optional)");

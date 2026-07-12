@@ -1101,30 +1101,15 @@ struct CoPilotsPlugin {
         cp::ParticipantId myId = session.addParticipant(cfg.nick);
         session.setMyId(myId);
 
-        netThread.startServer(cfg.port, cfg.port);
+        netThread.startServer(cfg.port, cfg.port, cfg.bindIp);
 
         std::vector<std::string> allIps;
-        {
-            char hostname[256] = {};
-            if (gethostname(hostname, sizeof(hostname)) == 0) {
-                addrinfo hints{}, *res = nullptr;
-                hints.ai_family   = AF_INET;
-                hints.ai_socktype = SOCK_STREAM;
-                if (getaddrinfo(hostname, nullptr, &hints, &res) == 0) {
-                    for (auto* ai = res; ai != nullptr; ai = ai->ai_next) {
-                        char ipbuf[INET_ADDRSTRLEN] = {};
-                        inet_ntop(AF_INET,
-                                  &reinterpret_cast<sockaddr_in*>(ai->ai_addr)->sin_addr,
-                                  ipbuf, sizeof(ipbuf));
-                        if (strcmp(ipbuf, "127.0.0.1") != 0 && ipbuf[0] != '\0') {
-                            bool dup = false;
-                            for (const auto& ex : allIps) if (ex == ipbuf) { dup = true; break; }
-                            if (!dup) allIps.push_back(ipbuf);
-                        }
-                    }
-                    freeaddrinfo(res);
-                }
-            }
+        if (!cfg.bindIp.empty()) {
+            // Sockets are bound to one specific interface — only that address
+            // can accept connections, so show it alone.
+            allIps.push_back(cfg.bindIp);
+        } else {
+            allIps = cp::net::ListLocalIPv4();
         }
         if (allIps.empty()) allIps.push_back("127.0.0.1");
         connWin.setIsHost(true);

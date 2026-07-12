@@ -412,18 +412,29 @@ void PhysicsSync::applyState(const proto::PhysicsState& s, double dt)
     wflt("sim/cockpit2/controls/yoke_pitch_ratio",   s.elevator);
     wflt("sim/cockpit2/controls/yoke_heading_ratio", s.rudder);
 
-    // Throttle lever.
-    XPLMDataRef thrRef = XPLMFindDataRef("sim/cockpit2/engine/actuators/throttle_ratio");
-    if (thrRef) XPLMSetDatavf(thrRef, const_cast<float*>(s.throttle), 0, 8);
-
-    // Thrust reverser deployment — CRITICAL: without this, clients see throttle=1 as
-    // full forward thrust when the master has reverser at maximum.
-    XPLMDataRef revRef = XPLMFindDataRef("sim/cockpit2/engine/actuators/thrust_reverser_deploy_ratio");
-    if (revRef) XPLMSetDatavf(revRef, const_cast<float*>(s.reverser_ratio), 0, 8);
-
-    // Prop pitch ratio.
-    XPLMDataRef propRef = XPLMFindDataRef("sim/cockpit2/engine/actuators/prop_ratio");
-    if (propRef) XPLMSetDatavf(propRef, const_cast<float*>(s.prop_ratio), 0, 8);
+    // Throttle, prop pitch, and thrust reverser: written at ~60 Hz via UDP so the
+    // throttle levers on non-master screens track the master's hardware smoothly.
+    // TCP-based updates alone (ONCHANGE) produce visible discrete jumps during
+    // continuous lever movement.
+    //
+    // TCP interference is prevented by isPhysicsOnlyDr in SyncEngine: the whole
+    // engine-actuator throttle family (throttle_ratio, throttle_beta_rev_ratio,
+    // throttle_jet_rev_ratio, prop_ratio, thrust_reverser, + _all variants) is
+    // excluded from TCP send AND receive on all participants.  Without that TCP
+    // echo path, there is no feedback loop, and the UDP writes only travel
+    // master → clients — a safe one-way stream.
+    {
+        XPLMDataRef thrRef = XPLMFindDataRef("sim/cockpit2/engine/actuators/throttle_ratio");
+        if (thrRef) XPLMSetDatavf(thrRef, const_cast<float*>(s.throttle), 0, 8);
+    }
+    {
+        XPLMDataRef revRef = XPLMFindDataRef("sim/cockpit2/engine/actuators/thrust_reverser_deploy_ratio");
+        if (revRef) XPLMSetDatavf(revRef, const_cast<float*>(s.reverser_ratio), 0, 8);
+    }
+    {
+        XPLMDataRef propRef = XPLMFindDataRef("sim/cockpit2/engine/actuators/prop_ratio");
+        if (propRef) XPLMSetDatavf(propRef, const_cast<float*>(s.prop_ratio), 0, 8);
+    }
 
     wflt("sim/cockpit2/controls/flap_handle_deploy_ratio", s.flap_ratio);
     wflt("sim/cockpit2/controls/speedbrake_ratio",         s.speedbrake);
