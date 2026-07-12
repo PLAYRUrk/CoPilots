@@ -6,6 +6,10 @@
 #include <cstring>
 #include <cmath>
 
+#ifndef M_PI
+#  define M_PI 3.14159265358979323846
+#endif
+
 namespace cp {
 
 static const char* DR_LAT      = "sim/flightmodel/position/latitude";
@@ -30,8 +34,11 @@ void PhysicsSync::init(Session* session, net::NetThread* net)
 
 void PhysicsSync::reset()
 {
-    seq_      = 0;
-    hasState_ = false;
+    seq_          = 0;
+    hasState_     = false;
+    lastRecvSeq_  = 0xFFFFFFFF;
+    deadReckonS_  = 0.0;
+    rendInit_     = false;
     memset(&latestState_, 0, sizeof(latestState_));
 
     XPLMDataRef ov = XPLMFindDataRef("sim/operation/override/override_planepath");
@@ -41,7 +48,7 @@ void PhysicsSync::reset()
     if (joyOvr) { int z = 0; XPLMSetDatai(joyOvr, z); }
 }
 
-void PhysicsSync::tick()
+void PhysicsSync::tick(double dt)
 {
     if (!session_ || !net_) return;
 
@@ -97,7 +104,17 @@ void PhysicsSync::tick()
         XPLMDataRef ovPath = XPLMFindDataRef("sim/operation/override/override_planepath");
         if (ovPath) { int z = 0; XPLMSetDatavi(ovPath, &z, 0, 1); }
 
-        applyState(latestState_);
+        // Track time since a new packet arrived (reset on each new seq).
+        // Feed-forward integration in applyState is capped at MAX_DEADRECKON_S
+        // so the client does not fly off if UDP stalls.
+        if (latestState_.seq != lastRecvSeq_) {
+            lastRecvSeq_  = latestState_.seq;
+            deadReckonS_  = 0.0;
+        } else {
+            deadReckonS_ += dt;
+        }
+
+        applyState(latestState_, dt);
     } else {
         // Non-master with no state from the current master yet — keep joystick and
         // planepath blocked so local hardware cannot affect the plane during the gap.
@@ -114,6 +131,13 @@ void PhysicsSync::sendState()
     s.type      = static_cast<uint8_t>(proto::UdpType::PHYSICS_STATE);
     s.seq       = seq_++;
     s.sender_id = static_cast<uint8_t>(session_->myId());
+
+    // Timestamp in master's sim time — used by clients to compute interpolation
+    // parameters so that position and velocity are always C1-consistent.
+    {
+        XPLMDataRef tRef = XPLMFindDataRef("sim/time/total_running_time_sec");
+        if (tRef) s.t_send = static_cast<double>(XPLMGetDataf(tRef));
+    }
 
     XPLMDataRef dr;
     auto rdbl = [&](const char* path, double& out) {
@@ -200,6 +224,21 @@ void PhysicsSync::sendState()
         for (int k = 0; k < 8; ++k) s.engine_running[k] = static_cast<uint8_t>(running[k]);
     }
 
+    // Derived aerodynamic state: read here so clients' instruments (AUASP, AoA indicator,
+    // accelerometer/перегрузкомер) display values consistent with the master rather than
+    // values derived from their own locally-computed kinematics.
+    //
+    // Background: clients keep override_planepath=0 so their SASL engine/hydraulics run
+    // freely, but the live flight-model derives G-load and AoA from position+velocity, which
+    // diverges from the master's because client position is blended while velocity is raw.
+    // Transmitting these derived scalars from the master and writing them on clients eliminates
+    // the divergence seen as host ~1g vs client ~1.5g in flight.
+    rflt("sim/flightmodel2/misc/gforce_normal", s.g_nrml);
+    rflt("sim/flightmodel2/misc/gforce_axil",   s.g_axil);
+    rflt("sim/flightmodel2/misc/gforce_side",   s.g_side);
+    rflt("sim/flightmodel/position/alpha",       s.alpha);
+    rflt("sim/flightmodel/position/beta",        s.beta);
+
     net::UdpDatagram dg;
     dg.data.resize(sizeof(s));
     memcpy(dg.data.data(), &s, sizeof(s));
@@ -210,7 +249,8 @@ void PhysicsSync::onMasterChanged()
 {
     // Discard stored state so the first packet from the new master (seq may start at 0)
     // is accepted regardless of what the previous master's last seq was.
-    hasState_ = false;
+    hasState_  = false;
+    rendInit_  = false;   // reset position blend — new master may be at a different location
 }
 
 void PhysicsSync::onUdpDatagram(const uint8_t* data, size_t len)
@@ -239,7 +279,7 @@ void PhysicsSync::onUdpDatagram(const uint8_t* data, size_t len)
     hasState_    = true;
 }
 
-void PhysicsSync::applyState(const proto::PhysicsState& s)
+void PhysicsSync::applyState(const proto::PhysicsState& s, double dt)
 {
     // NOTE: override_planepath is intentionally NOT set here.
     //
@@ -255,9 +295,52 @@ void PhysicsSync::applyState(const proto::PhysicsState& s)
     // override_planepath=1 is still applied during the "gap" period (no UDP state yet)
     // in tick() — see the !hasState_ branch there.
 
-    // lat/lon/alt datarefs are read-only without override; use local OpenGL coords instead
+    // True received position in local OpenGL coordinates (no extrapolation term —
+    // feed-forward below replaces it with zero steady-state lag).
     double lx, ly, lz;
     XPLMWorldToLocal(s.lat, s.lon, s.alt, &lx, &ly, &lz);
+
+    if (!rendInit_) {
+        // First packet: snap immediately to the true position.
+        rendX_ = lx;  rendY_ = ly;  rendZ_ = lz;
+        rendInit_ = true;
+    } else {
+        // --- Velocity feed-forward ---
+        // Advance rendered position along the master's velocity vector so that
+        // at constant speed the rendered position tracks the true position with
+        // ZERO steady-state lag (replaces the old extrapolation-to-a-static-target
+        // approach that caused ~28 m persistent lag at cruise speeds).
+        // Feed-forward is capped once dead-reckon time exceeds MAX_DEADRECKON_S so
+        // a UDP stall does not send the client aircraft flying off on stale velocity.
+        if (deadReckonS_ <= MAX_DEADRECKON_S) {
+            rendX_ += static_cast<double>(s.vx) * dt;
+            rendY_ += static_cast<double>(s.vy) * dt;
+            rendZ_ += static_cast<double>(s.vz) * dt;
+        }
+
+        // --- G-limited position correction ---
+        // After the feed-forward step, apply a small adaptive correction toward the
+        // true received position to absorb any residual drift (network jitter, float
+        // precision, master frame-rate mismatch).
+        //
+        // Corrective acceleration: G = k² * err / (dt² * g)
+        //   → k_max = dt * sqrt(MAX_BLEND_G * g / err)
+        // This formula is correct at any frame rate (dt-accurate), and is equivalent
+        // to the old sqrt(MAX_BLEND_G*g/(err*3600)) at exactly dt = 1/60 s.
+        //
+        // The master's actual G-load (gforce_normal/axil/side) is written over the
+        // client's value each frame (see below), so AUASP sees the master's G — not
+        // the corrective G here.  MAX_BLEND_G can therefore be set higher than the
+        // AUASP trip point without triggering false alerts.
+        double ex = lx - rendX_, ey = ly - rendY_, ez = lz - rendZ_;
+        double err = std::sqrt(ex*ex + ey*ey + ez*ez);
+        double k = (err > 1e-4)
+            ? (std::min)(MAX_BLEND_K, dt * std::sqrt(MAX_BLEND_G * 9.81 / err))
+            : MAX_BLEND_K;
+        rendX_ += k * ex;
+        rendY_ += k * ey;
+        rendZ_ += k * ez;
+    }
 
     auto wdbl = [](const char* path, double val) {
         XPLMDataRef dr = XPLMFindDataRef(path);
@@ -267,17 +350,42 @@ void PhysicsSync::applyState(const proto::PhysicsState& s)
         XPLMDataRef dr = XPLMFindDataRef(path);
         if (dr) XPLMSetDataf(dr, val);
     };
-    auto rflt = [](const char* path) -> float {
-        XPLMDataRef dr = XPLMFindDataRef(path);
-        return dr ? XPLMGetDataf(dr) : -999.f;
-    };
 
-    wdbl("sim/flightmodel/position/local_x", lx);
-    wdbl("sim/flightmodel/position/local_y", ly);
-    wdbl("sim/flightmodel/position/local_z", lz);
+    wdbl("sim/flightmodel/position/local_x", rendX_);
+    wdbl("sim/flightmodel/position/local_y", rendY_);
+    wdbl("sim/flightmodel/position/local_z", rendZ_);
     wflt(DR_PITCH, s.pitch);
     wflt(DR_ROLL,  s.roll);
     wflt(DR_HDG,   s.hdg);
+
+    // Write the quaternion sim/flightmodel/position/q which XP11 uses for
+    // rendered orientation.  Euler-only writes (psi/theta/phi above) update the
+    // physics-model angles but are ignored by the renderer, causing the visual
+    // heading to diverge from the physics heading.  The quaternion is the
+    // canonical source of orientation for the 3-D scene.
+    //
+    // Conversion: aerospace ZYX sequence (yaw→pitch→roll), half-angles.
+    // In XP11's left-handed local frame (Y up, X east, Z south) this maps to:
+    //   q[0] = w,  q[1] = x,  q[2] = y,  q[3] = z
+    {
+        static XPLMDataRef drQ = XPLMFindDataRef("sim/flightmodel/position/q");
+        if (drQ) {
+            static constexpr float DEG2RAD = static_cast<float>(M_PI / 180.0);
+            float y2 = s.hdg   * DEG2RAD * 0.5f;   // heading (yaw)
+            float p2 = s.pitch * DEG2RAD * 0.5f;   // pitch
+            float r2 = s.roll  * DEG2RAD * 0.5f;   // roll
+            float cy = cosf(y2), sy = sinf(y2);
+            float cp = cosf(p2), sp = sinf(p2);
+            float cr = cosf(r2), sr = sinf(r2);
+            float qv[4];
+            qv[0] = cr*cp*cy + sr*sp*sy;   // w
+            qv[1] = sr*cp*cy - cr*sp*sy;   // x
+            qv[2] = cr*sp*cy + sr*cp*sy;   // y
+            qv[3] = cr*cp*sy - sr*sp*cy;   // z
+            XPLMSetDatavf(drQ, qv, 0, 4);
+        }
+    }
+
     wflt(DR_VX,    s.vx);
     wflt(DR_VY,    s.vy);
     wflt(DR_VZ,    s.vz);
@@ -304,31 +412,6 @@ void PhysicsSync::applyState(const proto::PhysicsState& s)
     wflt("sim/cockpit2/controls/yoke_pitch_ratio",   s.elevator);
     wflt("sim/cockpit2/controls/yoke_heading_ratio", s.rudder);
 
-    // Diagnostic: every 5 seconds log yoke state so we can verify what drives animation
-    static int applyCount = 0;
-    if (++applyCount % 300 == 1) {
-        int joyOvrVal = joyOvr ? XPLMGetDatai(joyOvr) : -1;
-        float rollAfter  = rflt("sim/joystick/yoke_roll_ratio");
-        float pitchAfter = rflt("sim/joystick/yoke_pitch_ratio");
-        // Actual control surface deflection computed by flight model from joystick input
-        float ailAvg = rflt("sim/flightmodel2/controls/aileron_avg");
-        // Custom SASL yoke datarefs used by Tu-154 for cockpit object animation
-        float customYR  = rflt("sim/custom/controlls/yoke_roll");
-        float customYP  = rflt("sim/custom/controlls/yoke_pitch");
-        float customSCR = rflt("sim/custom/SC/yoke_roll_ratio");
-        Log("PhysicsSync::applyState DIAG override_joy=%d  "
-            "set_roll=%.3f got_roll=%.3f  "
-            "set_pitch=%.3f got_pitch=%.3f  "
-            "aileron_avg=%.3f  "
-            "custom/controlls/yoke_roll=%.3f  "
-            "custom/controlls/yoke_pitch=%.3f  "
-            "custom/SC/yoke_roll_ratio=%.3f",
-            joyOvrVal,
-            s.aileron, rollAfter,
-            s.elevator, pitchAfter,
-            ailAvg, customYR, customYP, customSCR);
-    }
-
     // Throttle lever.
     XPLMDataRef thrRef = XPLMFindDataRef("sim/cockpit2/engine/actuators/throttle_ratio");
     if (thrRef) XPLMSetDatavf(thrRef, const_cast<float*>(s.throttle), 0, 8);
@@ -345,14 +428,12 @@ void PhysicsSync::applyState(const proto::PhysicsState& s)
     wflt("sim/cockpit2/controls/flap_handle_deploy_ratio", s.flap_ratio);
     wflt("sim/cockpit2/controls/speedbrake_ratio",         s.speedbrake);
 
-    // Gear animation position (visual smoothness; actual deployment is driven by the
-    // gear handle dataref which is synced separately via DatarefRegistry).
-    XPLMDataRef gearRef = XPLMFindDataRef("sim/flightmodel2/gear/deploy_ratio");
-    if (gearRef) {
-        float gears[10];
-        std::fill(gears, gears + 10, s.gear_ratio);
-        XPLMSetDatavf(gearRef, gears, 0, 10);
-    }
+    // NOTE: gear deploy_ratio is intentionally NOT written here.
+    // The Tu-154 SASL model animates each gear leg independently based on the gear
+    // handle state; forcing all 10 legs to the same value fights the animation and
+    // produces jerky, slow-motion gear movement on clients.  The gear handle dataref
+    // is already synced via DatarefRegistry (TCP), so SASL receives the correct command
+    // and runs its own smooth animation without interference.
 
     // Toe brakes.
     wflt("sim/cockpit2/controls/left_brake_ratio",  s.left_brake);
@@ -366,6 +447,21 @@ void PhysicsSync::applyState(const proto::PhysicsState& s)
     // produce RPM oscillation rather than fixing it.  The PhysicsState still carries
     // engine_N1/N2/running (transmitted but now unused on the receive side); they remain
     // in the struct so sendState() can evolve without a protocol break.
+
+    // Derived aerodynamic state: write the master's G-load and AoA so that the client's
+    // instruments show values consistent with the master (fixes the ~1g vs ~1.5g divergence
+    // seen when the client's flight-model computes its own G from blended-position kinematics).
+    //
+    // These are written AfterFlightModel (same phase as the rest of applyState) so the
+    // freshly computed values from the master's struct overwrite whatever the client's own
+    // flight-model just derived.  If a dataref is read-only in a particular X-Plane version
+    // the write fails silently (XPLMSetDataf no-ops) — instruments will then fall back to
+    // the local flight-model value, which is the pre-existing behaviour.
+    wflt("sim/flightmodel2/misc/gforce_normal", s.g_nrml);
+    wflt("sim/flightmodel2/misc/gforce_axil",   s.g_axil);
+    wflt("sim/flightmodel2/misc/gforce_side",   s.g_side);
+    wflt("sim/flightmodel/position/alpha",       s.alpha);
+    wflt("sim/flightmodel/position/beta",        s.beta);
 }
 
 }

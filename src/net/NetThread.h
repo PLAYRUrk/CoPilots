@@ -21,6 +21,11 @@ struct InboundMsg {
 
 struct OutboundMsg {
     uint8_t              target = 0xFF;
+    // When target==0xFF (broadcast), skip the client with this connId.
+    // Set to msg.sender on host relays so the originating client does not
+    // receive its own message back (prevents three-position switch overshoot).
+    // 0 means no exclusion (all clients receive the broadcast).
+    uint8_t              excludeTarget = 0;
     std::vector<uint8_t> frame;
 };
 

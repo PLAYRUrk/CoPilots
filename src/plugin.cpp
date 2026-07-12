@@ -30,22 +30,6 @@
 
 using namespace cp;
 
-// ── SmartCopilot API compatibility ──────────────────────────────────────────
-// Felis Tu-154 (and other SASL aircraft) read scp/api/ismaster to detect a
-// SmartCopilot-compatible multiplayer plugin. Values: 0=not found/solo,
-// 1=slave (client), 2=master (physics captain). When the dataref is absent
-// (returns 0), the SASL fuel system runs its full logic on every participant,
-// causing all fire valves to animate together. Setting 1 on clients suppresses
-// that logic and lets the synced values from the physics master drive the sim.
-static float       s_scpIsmaster   = 0.f;
-static float       s_scpHasControl = 0.f;
-static XPLMDataRef s_scpIsmasterDref   = nullptr;
-static XPLMDataRef s_scpHasControlDref = nullptr;
-
-static float scpGetIsmaster (void*)         { return s_scpIsmaster; }
-static void  scpSetIsmaster (void*, float v) { s_scpIsmaster = v; }
-static float scpGetHasControl(void*)         { return s_scpHasControl; }
-static void  scpSetHasControl(void*, float v){ s_scpHasControl = v; }
 
 struct CoPilotsPlugin {
 
@@ -213,9 +197,9 @@ struct CoPilotsPlugin {
         XPLMCreateFlightLoop_t params{};
         params.structSize = sizeof(params);
         params.phase      = xplm_FlightLoop_Phase_AfterFlightModel;
-        params.callbackFunc = [](float , float ,
+        params.callbackFunc = [](float inElapsed, float ,
                                  int , void* ref) -> float {
-            static_cast<CoPilotsPlugin*>(ref)->onFlightLoop();
+            static_cast<CoPilotsPlugin*>(ref)->onFlightLoop(inElapsed);
             return -1.f;
         };
         params.refcon = this;
@@ -243,9 +227,14 @@ struct CoPilotsPlugin {
         Log("Plugin disabled");
     }
 
-    void onFlightLoop()
+    void onFlightLoop(float inElapsed)
     {
         if (!active) return;
+
+        // Clamp dt to a sane range: guard against first-frame zero, paused sim
+        // spike, or sim-speed values that would blow up the feed-forward integrator.
+        double dt = static_cast<double>(inElapsed);
+        if (dt <= 0.0 || dt > 0.1) dt = 1.0 / 60.0;
 
         // Detect and send local user changes FIRST, before processing any incoming
         // network messages. This prevents SASL callbacks triggered by applyIncoming()
@@ -297,7 +286,7 @@ struct CoPilotsPlugin {
         }
 
         if (netThread.connected)
-            physicsSync.tick();
+            physicsSync.tick(dt);
 
         // On non-masters: refresh the SyncEngine cache after applyState() has written
         // throttle/brake/flap datarefs and after SASL callbacks may have fired from
@@ -307,34 +296,17 @@ struct CoPilotsPlugin {
         if (netThread.connected && !session.isPhysicsMaster())
             syncEngine.refreshCache();
 
-        // When a non-master client has just received DATAREF_SET packets, SASL side-effects
-        // (e.g. Tu-154 fire-valve logic linking valve_1→valve_2/3) may have silently changed
-        // adjacent datarefs that refreshCache() absorbed. Ask the master to do a full resync
-        // so those incorrect values are overwritten quickly instead of waiting for the
-        // periodic backup resync below. Rate-limited to at most once every 2 seconds.
-        if (netThread.connected && !session.isPhysicsMaster() && anyDatarefApplied) {
-            static int resyncRequestCooldown = 0;
-            if (resyncRequestCooldown > 0) {
-                --resyncRequestCooldown;
-            } else {
-                resyncRequestCooldown = 120; // ~2 s at 60 fps
-                auto frame = cp::proto::MsgBuilder(cp::proto::MsgType::RESYNC_REQUEST).build();
-                cp::net::OutboundMsg out;
-                out.target = 0;
-                out.frame  = std::move(frame);
-                netThread.outTcp.push(std::move(out));
-            }
-        }
-
-        // Periodic backup full resync every ~5 seconds — catches any SASL side-effects
-        // that slipped through the RESYNC_REQUEST mechanism (e.g. on the master itself).
-        if (netThread.connected && session.isPhysicsMaster()) {
-            static int fullSyncFrames = 0;
-            if (++fullSyncFrames >= 300) {
-                fullSyncFrames = 0;
-                syncEngine.requestFullSync();
-            }
-        }
+        // RESYNC_REQUEST and periodic full resync were removed.
+        //
+        // The RESYNC_REQUEST mechanism asked the host for a full resync every ~2 seconds
+        // whenever the client received any dataref update.  The host responded by sending
+        // ALL datarefs, which overwrote any values the client had just set locally —
+        // causing switch snap-back.  Similarly, the host's periodic 5-second full resync
+        // pushed stale host values back to clients even for switches the client had moved.
+        //
+        // TCP is reliable: no packets are dropped, so a missed change cannot happen.
+        // Each side sends only when its own value changes; the suppress window handles
+        // SASL side-effects.  Full resync is only needed at join time (acceptJoin).
 
         if (netThread.connected)
             weatherSync.tick(1.f / 60.f);
@@ -345,16 +317,6 @@ struct CoPilotsPlugin {
             session.clear();
         }
 
-        // Keep SmartCopilot compatibility datarefs current every frame so SASL
-        // aircraft always see the correct master/slave state without any lag.
-        if (netThread.connected) {
-            bool amMaster    = session.isPhysicsMaster();
-            s_scpIsmaster   = amMaster ? 2.f : 1.f;
-            s_scpHasControl = amMaster ? 2.f : 1.f;
-        } else {
-            s_scpIsmaster   = 0.f;
-            s_scpHasControl = 0.f;
-        }
     }
 
     void acceptJoin(uint8_t connId, const std::string& nick)
@@ -436,7 +398,26 @@ struct CoPilotsPlugin {
             std::string nick      = r.str();
             uint32_t clientDrHash = r.empty() ? 0 : r.u32();
             std::string clientPwd = r.empty() ? "" : r.str();
-            (void)ver;
+
+            // Reject clients running a different protocol version.  PROTOCOL_VERSION is
+            // bumped whenever the binary layout of PhysicsState (UDP) changes, so mismatched
+            // peers would silently misinterpret packet fields (e.g. the new G/AoA fields
+            // would be read as throttle or prop data on an old client).  A clear error here
+            // is better than silent data corruption in the session.
+            if (ver != cp::proto::PROTOCOL_VERSION) {
+                char buf[192];
+                snprintf(buf, sizeof(buf),
+                         "Protocol version mismatch: you are running v%u, host requires v%u. "
+                         "Please update all CoPilots installations to the same version.",
+                         ver, cp::proto::PROTOCOL_VERSION);
+                auto rf = cp::proto::MsgBuilder(MT::REJECT).str(std::string(buf)).build();
+                cp::net::OutboundMsg ro;
+                ro.target = msg.sender; ro.frame = std::move(rf);
+                netThread.outTcp.push(std::move(ro));
+                Log("CoPilots: rejected '%s' — protocol version mismatch client=%u host=%u",
+                    nick.c_str(), ver, cp::proto::PROTOCOL_VERSION);
+                break;
+            }
 
             // Check lobby password
             if (!lobbyPassword_.empty() && clientPwd != lobbyPassword_) {
@@ -591,7 +572,8 @@ struct CoPilotsPlugin {
 
             if (session.isHost()) {
                 cp::net::OutboundMsg relay;
-                relay.target = 0xFF;
+                relay.target        = 0xFF;
+                relay.excludeTarget = msg.sender;  // don't echo back to the originator
                 relay.frame.resize(5 + msg.payload.size());
                 relay.frame[0] = msg.type;
                 uint32_t plen = static_cast<uint32_t>(msg.payload.size());
@@ -615,7 +597,8 @@ struct CoPilotsPlugin {
             }
             if (session.isHost()) {
                 cp::net::OutboundMsg relay;
-                relay.target = 0xFF;
+                relay.target        = 0xFF;
+                relay.excludeTarget = msg.sender;  // don't echo back to the originator
                 relay.frame.resize(5 + msg.payload.size());
                 relay.frame[0] = msg.type;
                 uint32_t plen = static_cast<uint32_t>(msg.payload.size());
@@ -737,10 +720,8 @@ struct CoPilotsPlugin {
         }
 
         case MT::RESYNC_REQUEST: {
-            // Client detected SASL side-effects (e.g. fire-valve chain) and requests a full
-            // resync so the master's authoritative values overwrite the corrupted ones quickly.
-            if (session.isHost())
-                syncEngine.requestFullSync();
+            // No longer acted upon — full resyncs cause switch snap-back (host values
+            // overwrite client-set values).  Message type kept for protocol compatibility.
             break;
         }
 
@@ -1206,8 +1187,6 @@ struct CoPilotsPlugin {
         sharedNotepad_.clear();
         notepadWin.resetShared();
         connWin.setState(cp::ui::ConnState::IDLE);
-        s_scpIsmaster   = 0.f;
-        s_scpHasControl = 0.f;
     }
 
     void onAircraftLoaded()
@@ -1249,26 +1228,7 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc)
     strncpy(outSig,  "com.copilots.xp11", 64);
     strncpy(outDesc, "Multi-crew shared cockpit for X-Plane 11 — unlimited crew, zone-based authority", 256);
 
-    // Register SmartCopilot API datarefs so SASL aircraft detect us as a
-    // compatible multiplayer plugin the moment our plugin loads.
-    s_scpIsmasterDref = XPLMRegisterDataAccessor(
-        "scp/api/ismaster", xplmType_Float, /*writable=*/1,
-        nullptr, nullptr,
-        scpGetIsmaster, scpSetIsmaster,
-        nullptr, nullptr,
-        nullptr, nullptr,
-        nullptr, nullptr,
-        nullptr, nullptr,
-        nullptr, nullptr);
-    s_scpHasControlDref = XPLMRegisterDataAccessor(
-        "scp/api/hascontrol_1", xplmType_Float, /*writable=*/1,
-        nullptr, nullptr,
-        scpGetHasControl, scpSetHasControl,
-        nullptr, nullptr,
-        nullptr, nullptr,
-        nullptr, nullptr,
-        nullptr, nullptr,
-        nullptr, nullptr);
+
 
     g_plugin = new CoPilotsPlugin();
 
@@ -1295,9 +1255,6 @@ PLUGIN_API void XPluginStop()
         delete g_plugin;
         g_plugin = nullptr;
     }
-    if (s_scpIsmasterDref)   { XPLMUnregisterDataAccessor(s_scpIsmasterDref);   s_scpIsmasterDref   = nullptr; }
-    if (s_scpHasControlDref) { XPLMUnregisterDataAccessor(s_scpHasControlDref); s_scpHasControlDref = nullptr; }
-    s_scpIsmaster = s_scpHasControl = 0.f;
     cp::Log("XPluginStop");
 }
 

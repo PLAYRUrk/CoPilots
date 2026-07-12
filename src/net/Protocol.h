@@ -7,7 +7,7 @@
 namespace cp {
 namespace proto {
 
-constexpr uint8_t PROTOCOL_VERSION = 1;
+constexpr uint8_t PROTOCOL_VERSION = 3;
 constexpr size_t  TCP_HEADER_SIZE  = 5;
 
 enum class MsgType : uint8_t {
@@ -72,6 +72,7 @@ struct PhysicsState {
     uint8_t  type      = static_cast<uint8_t>(UdpType::PHYSICS_STATE);
     uint32_t seq;
     uint8_t  sender_id = 0xFF;   // participant ID of the current physics master
+    double   t_send    = 0.0;    // master's sim/time/total_running_time_sec at send time
     double   lat, lon, alt;
     float    pitch, roll, hdg;
     float    vx, vy, vz;
@@ -90,6 +91,16 @@ struct PhysicsState {
     float    engine_N2[8];      // real ENGN_N2_ RPM % — written to bypass SASL engine overrides
     float    engine_N1[8];      // real ENGN_N1_ RPM % — same rationale
     uint8_t  engine_running[8]; // sim/flightmodel/engine/ENGN_running (0/1 per engine)
+
+    // Derived aerodynamic state — sent by the physics master so that clients' instruments
+    // (AUASP, AoA indicators, accelerometers) display values consistent with the master
+    // rather than values derived from the clients' own locally-computed kinematics.
+    // Written to clients via wflt() in applyState() after the flight model runs.
+    float    g_nrml = 0.f;   // sim/flightmodel2/misc/gforce_normal — normal load factor (G)
+    float    g_axil = 0.f;   // sim/flightmodel2/misc/gforce_axil  — axial load factor
+    float    g_side = 0.f;   // sim/flightmodel2/misc/gforce_side  — side load factor
+    float    alpha  = 0.f;   // sim/flightmodel/position/alpha     — angle of attack, deg
+    float    beta   = 0.f;   // sim/flightmodel/position/beta      — sideslip angle, deg
 };
 static_assert(sizeof(PhysicsState) < 512, "PhysicsState too large for single UDP");
 

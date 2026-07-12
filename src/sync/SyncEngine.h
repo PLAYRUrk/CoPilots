@@ -43,8 +43,7 @@ public:
 
     // Re-read all datarefs into the cache without sending anything. Call this after
     // external writes (applyState, SASL callbacks) so SyncEngine doesn't treat those
-    // writes as local user changes on the next tick. Echo-suppressed entries are skipped
-    // so an in-flight echo suppression from applyIncoming() is not clobbered.
+    // writes as local user changes on the next tick.
     void refreshCache();
 
     // Force all datarefs to be sent on the next tick (used when a new client joins)
@@ -63,13 +62,15 @@ private:
     Session*         session_ = nullptr;
 
     struct Cache {
-        DrValue value;
-        // After applyIncoming() writes a value, we suppress outbound sends for this
-        // many frames so SASL (or X-Plane) has time to settle before we re-read and
-        // compare.  During suppression, the cache tracks the settling value so that
-        // when the window expires, the first comparison is against the final value
-        // and no spurious retransmit occurs.
-        int     suppressFrames = 0;
+        DrValue value;          // last sent/received value (authoritative)
+        DrValue lastApplied;    // last value written from the network (for echo detection)
+        // Short window (frames) during which small deviations from lastApplied are
+        // treated as SASL quantization noise rather than real user input.
+        // Only used for FLOAT/DOUBLE/array types; INT is exact so no window needed.
+        int     echoFrames = 0;
+        // Frames elapsed since this side last made a real local change.
+        // Used by the reconciliation path to avoid overwriting recent user input.
+        int     framesSinceLocalChange = 9999;
         bool    cmdPending     = false;
     };
     std::vector<Cache> cache_;

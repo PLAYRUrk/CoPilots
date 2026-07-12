@@ -51,6 +51,7 @@ bool Config::load(const std::string& aircraftDir)
             f.close();
             if (loadJson(jsonPath)) {
                 loaded_ = true;
+                cfg_.nativeConfig = true;
                 Log("Config: loaded copilots.json for '%s'", cfg_.name.c_str());
                 return true;
             }
@@ -78,6 +79,21 @@ bool Config::load(const std::string& aircraftDir)
 
 void Config::applyAutoSync(const std::string& xplanePath)
 {
+    if (cfg_.nativeConfig) {
+        // A native copilots.json is loaded — skip auto-discovery entirely.
+        // Still compute drListHash so that host/client config mismatches (different
+        // copilots.json versions) are caught at handshake time.
+        uint32_t h = 2166136261u;
+        for (const auto& dr : cfg_.datarefs) {
+            for (unsigned char c : dr.path) { h ^= c; h *= 16777619u; }
+            h ^= 0u; h *= 16777619u;
+        }
+        cfg_.drListHash = h;
+        Log("Config::applyAutoSync: native config — skipping auto-discovery "
+            "(%zu datarefs, hash=0x%08X)", cfg_.datarefs.size(), cfg_.drListHash);
+        return;
+    }
+
     // Build deduplication set from datarefs already present in the manual config.
     std::unordered_set<std::string> existing;
     existing.reserve(cfg_.datarefs.size());

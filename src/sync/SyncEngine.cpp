@@ -9,6 +9,104 @@ namespace cp {
 
 static constexpr float FLOAT_EPS   = 1e-5f;
 static constexpr double DOUBLE_EPS = 1e-9;
+// Echo-absorption window after applyIncoming.  Resets while value keeps settling.
+static constexpr int ECHO_WINDOW   = 20;  // ~0.33 s at 60 fps; resets each absorbed frame
+
+// Returns true if the difference between 'cur' and 'baseline' exceeds the
+// synchronisation threshold — i.e. the change is large enough to be a real
+// user input rather than SASL quantization/settling noise.
+//
+// Threshold: 0.05% relative (5e-4 * |baseline|) with an absolute floor of 5e-4.
+// Rationale: the smallest real cockpit input (e.g. 1° heading step = 0.0175 rad ≈
+// 35× the 5e-4 floor) always passes; sub-threshold quantization noise is suppressed.
+// INT datarefs are exact — any difference is a real change.
+//
+// Used by BOTH the change-detector (auto/_SHARED/smartcopilot branch) and the
+// echo absorber (isSettlingEcho) so the two thresholds are guaranteed to match.
+static bool exceedsSyncThreshold(const DrValue& cur, const DrValue& baseline)
+{
+    if (cur.type != baseline.type) return true;
+    switch (cur.type) {
+        case DrType::INT:
+            return cur.i != baseline.i;
+        case DrType::FLOAT: {
+            float diff  = std::fabs(cur.f - baseline.f);
+            float scale = std::fabs(baseline.f);
+            return diff >= (scale > 0.1f ? 5e-4f * scale : 5e-4f);
+        }
+        case DrType::DOUBLE: {
+            double diff  = std::fabs(cur.d - baseline.d);
+            double scale = std::fabs(baseline.d);
+            return diff >= (scale > 0.1 ? 5e-4 * scale : 5e-4);
+        }
+        case DrType::FLOAT_ARR: {
+            if (cur.fa.size() != baseline.fa.size()) return true;
+            for (size_t k = 0; k < cur.fa.size(); ++k) {
+                float diff  = std::fabs(cur.fa[k] - baseline.fa[k]);
+                float scale = std::fabs(baseline.fa[k]);
+                if (diff >= (scale > 0.1f ? 5e-4f * scale : 5e-4f)) return true;
+            }
+            return false;
+        }
+        case DrType::INT_ARR:
+            if (cur.ia.size() != baseline.ia.size()) return true;
+            return memcmp(cur.ia.data(), baseline.ia.data(),
+                          cur.ia.size() * sizeof(int)) != 0;
+        case DrType::DATA:
+            return cur.ba != baseline.ba;
+        default:
+            return !cur.approxEqual(baseline);
+    }
+}
+
+// Returns true if 'cur' looks like SASL quantization/settling noise relative to
+// 'lastApplied' — delegates to exceedsSyncThreshold so change-detection and
+// echo-absorption always use the identical threshold.
+static bool isSettlingEcho(const DrValue& cur, const DrValue& lastApplied)
+{
+    return !exceedsSyncThreshold(cur, lastApplied);
+}
+
+// Returns true if this dataref is a simulation OUTPUT — a value computed by the
+// physics master's simulation engine and streamed to passive clients.  Outputs are
+// authoritative from the physics master only; non-masters must never send them back,
+// or they fight the master's live simulation (APU write-war, engine RPM crawl).
+//
+// Classification sources:
+//   1. SmartCopilot mode ([continued] section): SyncMode::CONTINUOUS signals that the
+//      original smartcopilot.cfg designated this as a "master sends" value.  This covers
+//      APU/engine RPM, voltages, temperatures, hydraulic pressure, and instrument reads.
+//      (SmartCopilot's own semantics: only the designated master sends [continued] data.)
+//   2. _AUTO zone: heuristic path analysis for standard sim/ datarefs that slip through
+//      the namespace filter with output-like names (rare, but possible on modded aircraft).
+//
+// Note: isAutoZone datarefs from DataRefs.txt are already filtered to writable cockpit
+// switches, so false-positive risk is low for the _AUTO branch.
+static bool classifyAsOutput(const RegisteredDataref& rd, bool isAutoZone)
+{
+    // SmartCopilot [continued] → simulation output; [triggers]/[send_back] → INPUT.
+    if (!isAutoZone && rd.mode == SyncMode::CONTINUOUS)
+        return true;
+
+    // _AUTO zone: heuristic on path tokens/suffixes for output-like standard datarefs.
+    if (isAutoZone) {
+        const std::string& p = rd.path;
+        auto endsWith = [&](const char* suffix) -> bool {
+            size_t n = std::strlen(suffix);
+            return p.size() >= n && p.compare(p.size() - n, n, suffix, n) == 0;
+        };
+        auto hasToken = [&](const char* tok) -> bool {
+            return p.find(tok) != std::string::npos;
+        };
+        if (endsWith("_rpm") || endsWith("_n1") || endsWith("_n2") ||
+            endsWith("_egt") || endsWith("_oil_t") || endsWith("_oil_p") ||
+            endsWith("_oil_q"))  return true;
+        if (endsWith("_amp") || endsWith("_volt")) return true;
+        if (hasToken("gforce") || hasToken("/gauges/") || hasToken("/indicators/"))
+            return true;
+    }
+    return false;
+}
 
 // Returns true for datarefs that PhysicsSync manages exclusively via UDP.
 // Syncing these via TCP as well would cause UDP writes on clients to be
@@ -27,6 +125,14 @@ static bool isPhysicsOnlyDr(const std::string& path)
     if (startsWith("sim/custom/SC/yoke_"))          return true;  // 19 chars
     if (path == "sim/operation/override/override_joystick")  return true;
     if (path == "sim/operation/override/override_planepath") return true;
+    // Gang controls: writing these sets ALL engines simultaneously, overriding
+    // per-engine values already synced individually via smartcopilot.cfg.
+    // mixture_ratio_all in the _AUTO zone would gang all fuel cutoff levers on
+    // the client even when the host moved only one — the individual [N] datarefs
+    // from the SHARED zone carry the correct per-engine state instead.
+    if (path == "sim/cockpit2/engine/actuators/mixture_ratio_all")  return true;
+    if (path == "sim/cockpit2/engine/actuators/throttle_ratio_all") return true;
+    if (path == "sim/cockpit2/engine/actuators/prop_ratio_all")     return true;
     return false;
 }
 
@@ -190,8 +296,16 @@ void SyncEngine::refreshCache()
     const auto& drs = reg_->datarefs();
     for (size_t i = 0; i < drs.size() && i < cache_.size(); ++i) {
         const auto& rd = drs[i];
-        if (rd.handle && cache_[i].suppressFrames == 0)
-            cache_[i].value = readDr(rd);
+        if (!rd.handle) continue;
+        // Skip datarefs still in the echo-absorption window: their cache holds the
+        // wire value that was just received; overwriting it with the live SASL readback
+        // would cause tick() to compare SASL-vs-SASL (always equal) and never detect
+        // the real applied value — defeating echo suppression entirely.
+        // PhysicsSync-written datarefs (throttle, brake, flap) are also received via
+        // TCP, so they have echoFrames > 0 and are skipped here; the UDP and TCP values
+        // come from the same master and are close enough that no spurious send occurs.
+        if (cache_[i].echoFrames > 0) continue;
+        cache_[i].value = readDr(rd);
     }
 }
 
@@ -209,67 +323,91 @@ void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
         const auto& rd = drs[i];
         if (!rd.handle) continue;
 
-        // Zone ownership:
-        //   _AUTO zone   → any participant sends; cockpit switches are not flight controls
-        //   SmartCopilot → any participant sends (same as original smartcopilot.cfg behaviour)
-        //   normal       → only the participant who owns the zone sends
+        // Zone ownership determines whether this participant sends a dataref:
+        //
+        //   _AUTO zone / SmartCopilot — two sub-cases:
+        //     INPUT  (ONCHANGE / [triggers]):  any participant sends — these are cockpit
+        //            switches/knobs/buttons that any crew member may operate.
+        //     OUTPUT (CONTINUOUS / [continued]): only the physics master sends — these are
+        //            simulation-computed values (engine RPM, voltages, temperatures, gauges).
+        //            Non-masters never send OUTPUT datarefs, which would fight the master's
+        //            live simulation (APU write-war, engine RPM crawl bugs).
+        //
+        //   Normal (copilots.json) — only the zone owner sends (unchanged behaviour).
+        //
         // Flight-control exclusivity (yoke, pedals, position) is enforced by PhysicsSync
         // via UDP — those datarefs are outside the _AUTO namespace and not in DataRefs.txt.
         bool iOwn;
-        bool isAutoZone = (rd.zoneId == AUTO_ZONE_ID);
+        bool isAutoZone   = (rd.zoneId == AUTO_ZONE_ID);
+        bool isSharedZone = (rd.zoneId == SHARED_ZONE_ID);
 
         // Yoke and override datarefs are owned exclusively by PhysicsSync (UDP).
         // Sending them via TCP as well causes the UDP write on clients to be picked
         // up as a "local change" on the next tick and echoed back, oscillating the yoke.
-        if ((isAutoZone || smartCopilotMode_) && isPhysicsOnlyDr(rd.path))
+        if ((isAutoZone || isSharedZone || smartCopilotMode_) && isPhysicsOnlyDr(rd.path))
             continue;
-        if (isAutoZone || smartCopilotMode_)
-            iOwn = true;
-        else
+        if (isAutoZone || isSharedZone || smartCopilotMode_) {
+            if (classifyAsOutput(rd, isAutoZone)) {
+                // OUTPUT dataref: only the physics master is the authoritative source.
+                iOwn = session_->isPhysicsMaster();
+            } else {
+                // INPUT dataref: any crew member may send cockpit switch/knob changes.
+                iOwn = true;
+            }
+        } else {
             iOwn = session_->iOwnZone(rd.zoneId);
+        }
         if (!iOwn) continue;
         ++ownCount;
 
         Cache& c = cache_[i];
 
-        if (c.suppressFrames > 0) {
-            // While the suppress window is active, keep the cache up-to-date with the
-            // settling value so no spurious send occurs when the window expires.
-            --c.suppressFrames;
-            if (rd.handle) c.value = readDr(rd);
-            continue;
-        }
+        // Tick echo-absorption window every frame regardless of whether we send.
+        if (c.echoFrames > 0) --c.echoFrames;
+        ++c.framesSinceLocalChange;
 
         DrValue cur = readDr(rd);
 
-        bool changed = !cur.approxEqual(c.value);
+        // For _AUTO / smartcopilot datarefs use the same relative threshold as the
+        // echo absorber so the two can never diverge and produce a feedback loop.
+        // For manual copilots.json datarefs keep the original absolute approxEqual
+        // to avoid any behaviour change in normal-mode sessions.
+        bool changed = (isAutoZone || isSharedZone || smartCopilotMode_)
+                           ? exceedsSyncThreshold(cur, c.value)
+                           : !cur.approxEqual(c.value);
         // CONTINUOUS mode only applies to manual-config datarefs in normal mode;
         // _AUTO and SmartCopilot datarefs always use ONCHANGE to avoid flooding TCP.
-        bool send    = doFull || (!smartCopilotMode_ && !isAutoZone && rd.mode == SyncMode::CONTINUOUS) || changed;
+        bool isContinuous = !smartCopilotMode_ && !isAutoZone
+                            && rd.mode == SyncMode::CONTINUOUS;
+        bool send = doFull || isContinuous || changed;
 
-        if (send) {
-            c.value = cur;
+        if (!send) continue;
 
-            // Targeted unconditional log for fuel fire-valve datarefs (rate-limited
-            // to 1 per dataref per 60 frames) so we can trace the exact valve
-            // indices/values sent from each side and diagnose the "all three move" bug.
-            if (rd.path.find("fire_v") != std::string::npos) {
-                static int fireValveSendLog = 0;
-                if (++fireValveSendLog <= 200 || fireValveSendLog % 60 == 0) {
-                    float fv = (cur.type == DrType::FLOAT) ? cur.f
-                             : (cur.type == DrType::INT)   ? (float)cur.i : 0.f;
-                    Log("SyncEngine::tick SEND fire_v path=%s val=%.4f idx=%zu",
-                        rd.path.c_str(), fv, i);
-                }
-            }
-
-            onChanged(static_cast<uint16_t>(i), cur);
-            ++sentCount;
+        // Value-based echo absorption: if a network value was just applied and the
+        // current change looks like SASL quantization noise (small relative to the
+        // applied value), absorb it silently without sending.  This replaces the old
+        // frame-count suppression window that blocked ALL outbound sends for 0.5–2 s
+        // and caused three-position switches to "fly past" and stop responding.
+        if (changed && c.echoFrames > 0 && isSettlingEcho(cur, c.lastApplied)) {
+            c.value = cur;          // track settling value; do not send
+            c.echoFrames = ECHO_WINDOW; // reset window so SASL settling is absorbed until stable
+            continue;
         }
+
+        c.value = cur;
+        if (changed) {
+            // Real local change: clear echo state so subsequent sends are not absorbed.
+            c.echoFrames = 0;
+            c.framesSinceLocalChange = 0;
+        }
+
+        onChanged(static_cast<uint16_t>(i), cur);
+        ++sentCount;
     }
 
+    // Rate-limited tick diagnostic (every ~5 s)
     static int tickLog = 0;
-    if (++tickLog % 300 == 1)
+    if (++tickLog % 300 == 1 && (sentCount > 0 || doFull))
         Log("SyncEngine::tick own=%d sent=%d/%zu full=%d",
             ownCount, sentCount, drs.size(), (int)doFull);
 
@@ -292,16 +430,32 @@ void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
     const RegisteredDataref* rd = reg_->getDr(drIndex);
     if (!rd || !rd->handle) return;
 
-    if (rd->zoneId == AUTO_ZONE_ID || smartCopilotMode_) {
-        // _AUTO / SmartCopilot: accept from any other participant.
-        // Echo from ourselves is dropped here; the cache echoSuppressed flag handles
-        // the case where we just wrote this value ourselves via applyIncoming.
+    if (rd->zoneId == AUTO_ZONE_ID || rd->zoneId == SHARED_ZONE_ID || smartCopilotMode_) {
+        // Echo from ourselves is always dropped.
         if (senderParticipantId == session_->myId()) return;
 
         // Yoke and override datarefs are driven exclusively by PhysicsSync via UDP.
         // Reject TCP copies to prevent the UDP write from being treated as a local
         // change on the next tick and echoed back (which would freeze the yoke at 0).
         if (isPhysicsOnlyDr(rd->path)) return;
+
+        // OUTPUT datarefs (simulation-computed values such as engine RPM, voltages,
+        // temperatures, and instrument readings) are authoritative from the physics master
+        // only.  If we ARE the physics master we must not let an incoming write overwrite
+        // our own simulation state — that is the root cause of the APU write-war bug where
+        // a client's diverged RPM continuously stomps the host's ramping value.
+        bool isAutoZone = (rd->zoneId == AUTO_ZONE_ID);
+        if (classifyAsOutput(*rd, isAutoZone)) {
+            if (session_->isPhysicsMaster())
+                return;  // I'm the master; I produce OUTPUT, I don't consume it.
+            // Non-master: accept OUTPUT from the physics master.
+            // senderParticipantId==0 means the message was relayed by the host whose
+            // authority was already verified on that end — trust the relay.
+            ParticipantId masterId = session_->physicsMasterId();
+            if (masterId != INVALID_PARTICIPANT_ID && senderParticipantId != 0
+                && senderParticipantId != masterId)
+                return;  // Output from a non-master participant — reject.
+        }
     } else {
         // Zone-authority mode: only apply if we don't own the zone.
         if (session_->iOwnZone(rd->zoneId)) return;
@@ -314,70 +468,27 @@ void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
         }
     }
 
-    static int applyLog = 0;
-    if (++applyLog <= 10 || applyLog % 600 == 0) {
-        // Log path and value to help diagnose which datarefs flow through TCP
-        // (e.g. fire_valve linking, yoke leak) without scanning by index.
-        float fval = (val.type == DrType::FLOAT) ? val.f
-                   : (val.type == DrType::INT)   ? (float)val.i : 0.f;
-        Log("SyncEngine::applyIncoming idx=%u path=%s zone=%s val=%.4f writable=%d sender=%u",
-            drIndex, rd->path.c_str(), rd->zoneId.c_str(),
-            fval, (int)rd->writable, senderParticipantId);
-    }
-
-    // Targeted unconditional log for fuel fire-valve datarefs — rate-limited
-    // so we see every event without flooding; crucial to diagnose the "all three
-    // move" bug (SASL-linking vs echo vs wrong valve relayed from host).
-    {
-        const std::string& p = rd->path;
-        if (p.find("fire_v") != std::string::npos) {
-            float fval = (val.type == DrType::FLOAT) ? val.f
-                       : (val.type == DrType::INT)   ? (float)val.i : 0.f;
-            static int fireValveLog = 0;
-            if (++fireValveLog <= 200 || fireValveLog % 30 == 0)
-                Log("SyncEngine::applyIncoming RECV fire_v path=%s val=%.4f sender=%u suppressAfter=%d",
-                    p.c_str(), fval, senderParticipantId,
-                    (drIndex < cache_.size()) ? 30 : -1);
-        }
-
-        // Extra log for yoke/override datarefs to diagnose animation issues
-        bool isYoke = p.find("yoke") != std::string::npos
-                   || p.find("override_joystick") != std::string::npos;
-        if (isYoke) {
-            float fval = (val.type == DrType::FLOAT) ? val.f
-                       : (val.type == DrType::INT)   ? (float)val.i : 0.f;
-            static int yokeLog = 0;
-            if (++yokeLog <= 20 || yokeLog % 120 == 0)
-                Log("SyncEngine::applyIncoming YOKE path=%s val=%.4f sender=%u",
-                    p.c_str(), fval, senderParticipantId);
-        }
-    }
-
     writeDr(*rd, val);
 
     if (drIndex < cache_.size()) {
-        // Read back the actual value after the write.  SASL may quantise/clamp the value
-        // synchronously; storing the post-write readback prevents the slightly different
-        // cached value from triggering a retransmit on the next tick.
-        cache_[drIndex].value = readDr(*rd);
-        // Suppress outbound sends for ~0.5 s (30 frames) so SASL side-effect cascades
-        // (fire-valve linking, etc.) have time to settle before we re-read and compare.
-        //
-        // CONTINUOUS datarefs (animations like fire_vlv_open) get a much longer window
-        // (120 frames ≈ 2 s) because their SASL-driven animation continues to change
-        // the value every frame after the network update.  If the suppress window is
-        // shorter than the animation duration, the receiver detects the still-running
-        // SASL animation as a "local change" and echoes intermediate values back to the
-        // sender, causing the "position flashes then all three move" glitch on fire valves.
-        // The longer window lets SASL finish the animation; the cache tracks it to the
-        // final settled value so no echo fires when the window expires.
-        //
-        // ONCHANGE datarefs (switches, knobs) keep the short 30-frame window so user
-        // interactions still propagate within 0.5 s even during a suppress period.
-        static constexpr int SUPPRESS_WINDOW      = 30;
-        static constexpr int SUPPRESS_WINDOW_CONT = 120;
-        cache_[drIndex].suppressFrames =
-            (rd->mode == SyncMode::CONTINUOUS) ? SUPPRESS_WINDOW_CONT : SUPPRESS_WINDOW;
+        // Store the wire value as the authoritative cache entry.  Using the exact
+        // wire value (not a post-write readback) guarantees that host and client
+        // converge on the same number: the readback could have been quantised by SASL
+        // to a slightly different float, causing both sides to disagree and ping-pong.
+        cache_[drIndex].value       = val;
+        cache_[drIndex].lastApplied = val;
+
+        // Arm a short echo-absorption window for float/array types so that SASL
+        // quantization noise (small deviations from the applied value) in the next
+        // few frames is absorbed silently rather than sent back to the sender.
+        // INT datarefs are written exactly — no echo window needed.
+        bool needsEchoWindow = (val.type == DrType::FLOAT   ||
+                                 val.type == DrType::DOUBLE  ||
+                                 val.type == DrType::FLOAT_ARR ||
+                                 val.type == DrType::INT_ARR);
+        cache_[drIndex].echoFrames = needsEchoWindow ? ECHO_WINDOW : 0;
+        // Do NOT reset framesSinceLocalChange — an incoming network write does not
+        // count as a local user interaction for reconciliation purposes.
     }
 }
 

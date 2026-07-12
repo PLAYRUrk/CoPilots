@@ -206,8 +206,14 @@ void NetThread::serverLoop(uint16_t tcpPort, uint16_t udpPort)
         OutboundMsg out;
         while (outTcp.pop(out)) {
             if (out.target == 0xFF) {
-                for (auto& c : clients)
+                for (auto& c : clients) {
+                    // Skip the originating client when a relay exclusion is set.
+                    // This prevents the sender from receiving its own message back,
+                    // which would cause three-position switches to advance one extra
+                    // detent (the re-applied echo triggers a SASL state reaction).
+                    if (out.excludeTarget && c.id == out.excludeTarget) continue;
                     TcpSendAll(c.sock, out.frame.data(), out.frame.size());
+                }
             } else {
                 for (auto& c : clients) {
                     if (c.id == out.target)
