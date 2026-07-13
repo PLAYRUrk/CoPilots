@@ -9,6 +9,7 @@
 | Самолёт | Папка | X-Plane | Статус |
 |---|---|---|---|
 | LevelUp Boeing 737NG | [`levelup-737ng/`](levelup-737ng/) | 11.5x | 🧪 в облёте |
+| Colimata Concorde FXP | [`colimata-concorde/`](colimata-concorde/) | 11.x | 🚧 черновик |
 
 Статусы: ✅ облётан · 🧪 в облёте · 🚧 черновик
 

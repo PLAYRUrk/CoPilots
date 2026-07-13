@@ -377,6 +377,7 @@ void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
 
     bool doFull = fullSyncPending_;
     fullSyncPending_ = false;
+    ++tickCounter_;
 
     const auto& drs = reg_->datarefs();
     int sentCount = 0;
@@ -440,9 +441,17 @@ void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
                            : !cur.approxEqual(c.value);
         // CONTINUOUS mode only applies to manual-config datarefs in normal mode;
         // _AUTO and SmartCopilot datarefs always use ONCHANGE to avoid flooding TCP.
+        //
+        // CONTINUOUS semantics = "master-authoritative state": sent immediately when
+        // the master's value changes, PLUS a staggered heartbeat (~every CONT_HEARTBEAT
+        // frames) that re-pins clients whose local aircraft logic diverged the value
+        // (e.g. a relayed button press toggling their Lua state).  A full every-tick
+        // stream is unnecessary and does not scale to hundreds of option datarefs.
         bool isContinuous = !smartCopilotMode_ && !isAutoZone
                             && rd.mode == SyncMode::CONTINUOUS;
-        bool send = doFull || isContinuous || changed;
+        bool heartbeat = isContinuous
+                         && (((tickCounter_ + i) % CONT_HEARTBEAT) == 0);
+        bool send = doFull || heartbeat || changed;
 
         if (!send) continue;
 

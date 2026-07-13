@@ -56,8 +56,13 @@ public:
     void setSmartCopilotMode(bool v) { smartCopilotMode_ = v; }
 
 private:
+    // CONTINUOUS datarefs: heartbeat period in flight-loop frames (~0.33 s at 60 fps).
+    // Each dataref's heartbeat is staggered by its index so the load spreads evenly.
+    static constexpr uint32_t CONT_HEARTBEAT = 20;
+
     bool fullSyncPending_   = false;
     bool smartCopilotMode_  = false;
+    uint32_t tickCounter_   = 0;
     DatarefRegistry* reg_     = nullptr;
     Session*         session_ = nullptr;
 
