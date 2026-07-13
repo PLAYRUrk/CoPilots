@@ -42,6 +42,13 @@ public:
     // Pending join approval (host only)
     std::function<void(uint8_t connId)>                    onAcceptJoin;
     std::function<void(uint8_t connId)>                    onRejectJoin;
+    // Aircraft config library (GitHub) download
+    std::function<void()>                                  onDownloadConfig;
+    // Manual pick: download a specific library entry (folder id)
+    std::function<void(const std::string& folder, const std::string& aircraft)> onDownloadConfigEntry;
+    void setDownloadStatus(const std::string& s) { downloadStatus_ = s; }
+    void setLibraryList(const std::vector<std::pair<std::string,std::string>>& l)
+    { libList_ = l; if (libSel_ >= (int)libList_.size()) libSel_ = 0; }
     // Control transfer
     std::function<void()>                                  onRequestControl;
     std::function<void(ParticipantId)>                     onGrantControl;
@@ -107,6 +114,11 @@ private:
     // Control denied notification (client)
     std::string controlDeniedMsg_;
     float       controlDeniedTimer_ = 0.f;
+
+    // Config library download status line + manual picker (folder, display name)
+    std::string downloadStatus_;
+    std::vector<std::pair<std::string,std::string>> libList_;
+    int         libSel_ = 0;
 
     void renderConnectForm();
     void renderHostedView();

@@ -28,8 +28,6 @@ plugins\
   CoPilots\
     64\
       win.xpl
-    configs\
-      copilots.example.json
 ```
 
 4. Start X-Plane. The plugin appears under **Plugins → CoPilots**.
@@ -71,7 +69,21 @@ Only **one pilot** controls the aircraft at a time — the **physics master**. B
 
 ## Aircraft configuration
 
-CoPilots works **without any configuration file** — it automatically discovers and synchronises hundreds of cockpit datarefs from X-Plane's built-in `DataRefs.txt` (autopilot, switches, GPS, engine actuators, etc.). No per-aircraft setup is required.
+### Ready-made configs (recommended)
+
+For complex aircraft (Zibo/LevelUp, IXEG, Colimata, etc.) use the ready-made configs from the [`configs/`](configs/) folder of this repository — it also contains the table of supported aircraft and their test status.
+
+The easiest way: load your aircraft, open **Plugins → CoPilots → Connect / Host** and click **Download config for current aircraft** — the plugin fetches the matching config from this repository and installs it into the aircraft folder automatically (a `.bak` backup of any existing `copilots.json` is kept). Every crew member should do this — the files must be identical.
+
+Manual alternative: copy the aircraft's `copilots.json` from [`configs/`](configs/) into its folder (next to the `.acf`) on every crew member's machine.
+
+Your aircraft is not on the list? [`configs/README.md`](configs/README.md) describes the rules for building a config (usually generated from a community `smartcopilot.cfg`) — PRs are welcome.
+
+### Without a config
+
+CoPilots works **without any configuration file** — it automatically discovers and synchronises hundreds of cockpit datarefs from X-Plane's built-in `DataRefs.txt` (autopilot, switches, GPS, engine actuators, etc.). This is enough for aircraft with standard systems; on aircraft with custom logic (SASL/Gizmo) the custom switches will not sync without a config.
+
+### Custom config
 
 For finer control — custom zones, roles, and specific dataref assignments — place a `copilots.json` file in your aircraft's folder.
 
@@ -99,16 +111,16 @@ For finer control — custom zones, roles, and specific dataref assignments — 
 ```
 
 **Sync modes:**
-- `onchange` — sent only when the value changes (switches, buttons)
-- `continuous` — sent every tick at ~20 Hz (knobs, analog values)
+- `onchange` — sent only when the value changes (switches, buttons); any crew member can send
+- `continuous` — master-authoritative state: sent by the physics master on change plus a ~3 Hz heartbeat (parking brake, trim, EFB state, engine outputs)
 
-Datarefs listed in `copilots.json` are deduplicated against the auto-discovered set so there is no overlap.
+Useful fields: `"autoSync": true` appends the auto-discovered standard datarefs to the manual list; the `"_SHARED"` zone gives "anyone can send" semantics without zone authority.
 
 ---
 
 ## SmartCopilot compatibility
 
-If `copilots.json` is not present but `smartcopilot.cfg` is, CoPilots loads it automatically. All listed datarefs are synchronised with the **physics master as sole sender** — other crew members receive but cannot send cockpit state. Zone and role assignment are unavailable in this mode.
+If `copilots.json` is not present but `smartcopilot.cfg` is, CoPilots loads it automatically: `[TRIGGERS]` datarefs and `[COMMANDS]` commands are synchronised between all crew members, while thrust levers/axes are filtered out (they are carried by the UDP physics stream). For complex aircraft a native `copilots.json` from [`configs/`](configs/) works noticeably better — see the supported aircraft table.
 
 ---
 

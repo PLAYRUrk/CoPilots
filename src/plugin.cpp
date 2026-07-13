@@ -8,6 +8,7 @@
 #include "net/NetThread.h"
 #include "net/Protocol.h"
 #include "net/Transport.h"
+#include "net/ConfigDownloader.h"
 #include "ui/ConnectionWindow.h"
 #include "ui/StatusHud.h"
 #include "ui/NotepadWindow.h"
@@ -37,6 +38,7 @@ struct CoPilotsPlugin {
     cp::DatarefRegistry     registry;
     cp::Session             session;
     cp::net::NetThread      netThread;
+    cp::net::ConfigDownloader cfgDownloader;
     cp::SyncEngine          syncEngine;
     cp::PhysicsSync         physicsSync;
     cp::WeatherSync         weatherSync;
@@ -141,6 +143,25 @@ struct CoPilotsPlugin {
                 std::remove_if(pendingConns_.begin(), pendingConns_.end(),
                                [connId](const PendingConn& p){ return p.connId == connId; }),
                 pendingConns_.end());
+        };
+        connWin.onDownloadConfig = [this]() {
+            char acfPath[512]; char acfFile[256];
+            XPLMGetNthAircraftModel(0, acfFile, acfPath);
+            std::string dir = acfPath;
+            size_t sep = dir.find_last_of("/\\");
+            if (sep != std::string::npos) dir = dir.substr(0, sep);
+            if (cfgDownloader.start(dir, acfFile))
+                connWin.setDownloadStatus("Downloading...");
+        };
+        connWin.onDownloadConfigEntry = [this](const std::string& folder,
+                                               const std::string& aircraft) {
+            char acfPath[512]; char acfFile[256];
+            XPLMGetNthAircraftModel(0, acfFile, acfPath);
+            std::string dir = acfPath;
+            size_t sep = dir.find_last_of("/\\");
+            if (sep != std::string::npos) dir = dir.substr(0, sep);
+            if (cfgDownloader.startFolder(dir, folder, aircraft))
+                connWin.setDownloadStatus("Downloading...");
         };
         connWin.onRequestControl = [this]() {
             auto frame = cp::proto::MsgBuilder(cp::proto::MsgType::CONTROL_REQUEST).build();
@@ -315,6 +336,31 @@ struct CoPilotsPlugin {
             connWin.setState(cp::ui::ConnState::CONNECT_ERROR, netThread.lastError);
             netThread.hasError = false;
             session.clear();
+        }
+
+        // Config-library download result → UI status line.  The download runs on
+        // a worker thread; the installed copilots.json is picked up on the next
+        // Host/Join (an active session is never mutated mid-flight).
+        {
+            auto dlState = cfgDownloader.state();
+            if (dlState == cp::net::ConfigDownloader::State::SUCCESS ||
+                dlState == cp::net::ConfigDownloader::State::FAILED) {
+                std::string msg = cfgDownloader.message();
+                if (dlState == cp::net::ConfigDownloader::State::SUCCESS)
+                    msg += netThread.connected
+                         ? " Restart the session to apply."
+                         : " It will be used on the next Host / Join.";
+                connWin.setDownloadStatus(msg);
+                // Publish the library list for the manual picker (available after
+                // any attempt that managed to fetch the manifest).
+                {
+                    std::vector<std::pair<std::string,std::string>> list;
+                    for (const auto& e : cfgDownloader.entries())
+                        list.emplace_back(e.folder, e.aircraft);
+                    connWin.setLibraryList(list);
+                }
+                cfgDownloader.acknowledge();
+            }
         }
 
     }

@@ -1,0 +1,20 @@
+{
+  "_comment": "Machine-readable index of the config library, fetched by the in-plugin ConfigDownloader. 'match' entries are lowercase substrings tested against the aircraft folder name and the .acf file name.",
+  "configs": [
+    {
+      "folder": "levelup-737ng",
+      "aircraft": "LevelUp Boeing 737NG",
+      "match": ["levelup", "level up", "lu737", "737ng", "b736", "b737-600", "b737-700", "b737-800", "b737-900", "zibo", "b738x"]
+    },
+    {
+      "folder": "colimata-concorde",
+      "aircraft": "Colimata Concorde FXP",
+      "match": ["concorde"]
+    },
+    {
+      "folder": "ixeg-737-300",
+      "aircraft": "IXEG Boeing 737-300",
+      "match": ["ixeg", "733", "737-300"]
+    }
+  ]
+}

@@ -74,10 +74,16 @@ static bool parseAddr(const char* buf, std::string& outHost, uint16_t& outPort)
 
 void ConnectionWindow::renderContent()
 {
-    // Enforce a minimum window width so buttons like "Request Controls" never clip.
+    // Enforce a minimum window width so the widest fill-width button never clips
+    // (AlwaysAutoResize ignores ImVec2(-1,·) buttons when sizing the window).
     {
         const ImGuiStyle& sty = ImGui::GetStyle();
-        float minW = ImGui::CalcTextSize("Request Controls").x
+        float textW = ImGui::CalcTextSize("Request Controls").x;
+        if (onDownloadConfig) {
+            float dlW = ImGui::CalcTextSize("Download config for current aircraft").x;
+            if (dlW > textW) textW = dlW;
+        }
+        float minW = textW
                    + sty.FramePadding.x * 2.f
                    + sty.WindowPadding.x * 2.f + 12.f;
         if (minW < 280.f) minW = 280.f;
@@ -245,6 +251,37 @@ void ConnectionWindow::renderConnectForm()
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
+    }
+
+    // ── Aircraft config library ─────────────────────────────────────────────
+    // Downloads the community copilots.json for the currently loaded aircraft
+    // from the project's GitHub into the aircraft folder.
+    if (onDownloadConfig) {
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextDisabled("Aircraft config library");
+        if (ImGui::Button("Download config for current aircraft", ImVec2(-1.f, 24.f)))
+            onDownloadConfig();
+
+        // Manual picker: for aircraft without their own entry the crew can
+        // install a compatible one (e.g. the LevelUp config on a Zibo).
+        if (!libList_.empty() && onDownloadConfigEntry) {
+            ImGui::Text("Or pick manually:");
+            ImGui::SetNextItemWidth(-78.f);
+            const char* preview = libList_[libSel_].second.c_str();
+            if (ImGui::BeginCombo("##libpick", preview)) {
+                for (int i = 0; i < (int)libList_.size(); ++i)
+                    if (ImGui::Selectable(libList_[i].second.c_str(), libSel_ == i))
+                        libSel_ = i;
+                ImGui::EndCombo();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Install", ImVec2(-1.f, 0.f)))
+                onDownloadConfigEntry(libList_[libSel_].first, libList_[libSel_].second);
+        }
+
+        if (!downloadStatus_.empty())
+            ImGui::TextWrapped("%s", downloadStatus_.c_str());
     }
 }
 

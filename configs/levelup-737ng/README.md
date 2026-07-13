@@ -5,26 +5,26 @@
 | **Aircraft** | LevelUp 737NG series (-600/-700/-800/-900) |
 | **X-Plane** | 11.5x |
 | **Config version** | 1.0.0 |
-| **Status** | 🧪 в облёте (тестируется экипажем) |
-| **Based on** | smartcopilot.cfg by Birdy.dma для Zibo 3.40.19 / XP 11.41 (ближайшая база LevelUp) |
+| **Status** | 🧪 flight testing |
+| **Based on** | smartcopilot.cfg by Birdy.dma for Zibo 3.40.19 / XP 11.41 (closest base to LevelUp) |
 
-## Установка
+## Installation
 
-Скопируйте `copilots.json` в папку самолёта (рядом с `.acf`) **у всех участников сессии** — файл должен быть идентичным, иначе клиент не пройдёт проверку совместимости при подключении. Если в папке лежит `smartcopilot.cfg`, он игнорируется (`copilots.json` имеет приоритет).
+Copy `copilots.json` into the aircraft folder (next to the `.acf`) **on every crew member's machine** — the file must be identical everywhere, otherwise the client fails the compatibility check on join. If a `smartcopilot.cfg` is present in the folder, it is ignored (`copilots.json` takes priority).
 
-## Что синхронизируется
+## What is synchronised
 
-- **Датарефы (onchange, ~910)** — позиции переключателей, MCP-крутилки, баро, EFIS, свет, яркость, радио, полный набор отказов (~520), опции самолёта из FMC-меню (единицы, эффекты, загрузка/пассажиры).
-- **Датарефы (continuous, только от физмастера)** — стояночный тормоз, триммеры, физические состояния отказов (сложившиеся стойки, пробитые колёса).
-- **Команды (646, с ретрансляцией удержания)** — все кнопки и тумблеры, управляемые Lua-логикой: FMC обоих CDU, пожарная панель, тесты (stall/overspeed/fire), генераторы, packs, spring-переключатели, форточки кокпита.
+- **Datarefs (onchange, ~700)** — switch positions, MCP dials, baro, EFIS, lights, brightness, radios, the full failure set (~520), aircraft options from the FMC menu (units, effects, payload/pax).
+- **Datarefs (continuous, physics-master-only)** — parking brake, trims, EFB/tablet state (whole `efb` array), physical failure states (collapsed gear, blown tires).
+- **Commands (652, with hold relay)** — every button and Lua-driven toggle: both CDUs, fire panel, tests (stall/overspeed/fire), generators (GEN/APU GEN/GPU — spring-loaded, hold works), packs, spring switches, cockpit windows.
 
-## Сознательно НЕ синхронизируется этим конфигом
+## Deliberately NOT in this config
 
-- РУДы, реверс, штурвал, педали, тормоза — их возит UDP-поток PhysicsSync (добавление их сюда вызывает дёргание рычагов).
-- Параметры двигателей (N1/N2), топливо по бакам — UDP-поток от физмастера.
-- Селекторы аудиопанели (PTT/громкости) — пер-пилотное локальное состояние.
+- Thrust levers / reverse levers / trim values / toe brakes — streamed by UDP PhysicsSync at 60 Hz (adding them here causes lever jitter).
+- Engine parameters (N1/N2), fuel per tank — UDP stream from the physics master.
+- Audio panel mic selectors — per-pilot local state.
 
-## Известные ограничения
+## Known limitations
 
-- Стояночный тормоз и триммер меняются только со стороны текущего физмастера (как и в SmartCopilot).
-- Часть ручек подсветки добавлена по именам Zibo 4.x — если в LevelUp их нет, они просто не работают (без вреда).
+- Parking brake, trim and EFB state can only be changed from the current physics master's side (same as SmartCopilot).
+- Some brightness knobs were added using Zibo 4.x dataref names — if LevelUp lacks them they are silently ignored (harmless).

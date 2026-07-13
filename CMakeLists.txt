@@ -46,6 +46,7 @@ set(COPILOTS_SOURCES
 
     src/net/Transport.cpp
     src/net/NetThread.cpp
+    src/net/ConfigDownloader.cpp
 
     src/sync/DatarefRegistry.cpp
     src/sync/SyncEngine.cpp
@@ -98,7 +99,7 @@ if(WIN32)
         SUFFIX       ".xpl"
         PREFIX       ""
     )
-    target_link_libraries(CoPilots PRIVATE opengl32 ws2_32)
+    target_link_libraries(CoPilots PRIVATE opengl32 ws2_32 wininet)
     target_compile_definitions(CoPilots PRIVATE _CRT_SECURE_NO_WARNINGS)
 
     # Ensure we export the required plugin symbols
@@ -129,16 +130,15 @@ endif()
 # ── Post-build: copy to plugin installation layout ─────────────────────────
 # Build output: build/out/win.xpl (Windows)
 # Final layout: build/CoPilots/64/win.xpl
-# Copy configs/ next to the .xpl parent
+# NOTE: configs/ is NOT bundled — the plugin never reads it from its own folder.
+# Aircraft configs are downloaded from GitHub in-plugin (ConfigDownloader) or
+# installed manually into the aircraft folder from the repo's configs/ library.
 add_custom_command(TARGET CoPilots POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
         "${CMAKE_BINARY_DIR}/install/CoPilots/64"
     COMMAND ${CMAKE_COMMAND} -E copy
         $<TARGET_FILE:CoPilots>
         "${CMAKE_BINARY_DIR}/install/CoPilots/64/$<TARGET_FILE_NAME:CoPilots>"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_SOURCE_DIR}/configs"
-        "${CMAKE_BINARY_DIR}/install/CoPilots/configs"
     COMMENT "Staging plugin to build/install/CoPilots/"
 )
 

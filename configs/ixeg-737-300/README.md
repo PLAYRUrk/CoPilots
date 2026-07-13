@@ -3,30 +3,32 @@
 | | |
 |---|---|
 | **Aircraft** | IXEG 737 Classic (737-300) |
-| **Aircraft version** | 1.33 |
+| **Aircraft version** | 1.33 / 1.1x era |
 | **X-Plane** | 11.x |
-| **Config version** | 1.0.0 |
-| **Status** | 🚧 черновик (не облётан) |
-| **Based on** | smartcopilot.cfg от 2020-12-29 by Birdy.dma для IXEG 737 V1.33 |
+| **Config version** | 1.0.3 |
+| **Status** | 🚧 draft (not flight tested) |
+| **Based on** | smartcopilot.cfg 2020-12-29 by Birdy.dma for IXEG 737 V1.33 |
 
-## Установка
+## Installation
 
-Скопируйте `copilots.json` в папку самолёта (рядом с `.acf`) **у всех участников сессии** — файл должен быть идентичным, иначе клиент не пройдёт проверку совместимости при подключении.
+Copy `copilots.json` into the aircraft folder (next to the `.acf`) **on every crew member's machine** — the file must be identical everywhere, otherwise the client fails the compatibility check on join.
 
-## Что синхронизируется
+## What is synchronised
 
-- **Датарефы (onchange, ~1146)** — весь кокпит: оверхед, автопилот/MCP, радио, транспондер, аудиопанели, свет, отказы, **комплектация** (`ixeg/733/misc/winglets` — виноглеты) и прочие настройки IXEG.
-- **Датарефы (continuous, только от физмастера, 39)** — двигательные параметры (EPR, расход, масло — давление/температура/количество), электрические отказы, заряд АКБ, триммеры.
-- **Команды (23, с ретрансляцией удержания)** — FMC CLR, тесты (EGPWS, cargo fire, bleed ovht, транспондер), gear release, триммирование, TOGA, BetterPushback, общая пауза.
+- **Datarefs (onchange, ~1160)** — the whole cockpit: overhead, autopilot/MCP, radios, transponder, audio panels, lights, the full standard failure set (~515) plus all 29 IXEG custom failures (electrics + hydraulics, settable by any crew member via the IXEG menu), **airframe options** (`ixeg/733/misc/winglets`) and other IXEG preferences.
+- **Datarefs (continuous, physics-master-only, ~40)** — engine parameters (EPR, fuel flow, oil pressure/temperature/quantity), battery charge, parking brake, trims.
+- **Commands (23, with hold relay)** — FMC CLR, tests (EGPWS, cargo fire, bleed ovht, transponder), gear release, trim, TOGA, BetterPushback, shared pause.
 
-## Сознательно НЕ синхронизируется этим конфигом
+## Deliberately NOT in this config
 
-- РУДы, реверс (`eng*_rev_angle`), штурвал, руль направления, тормоза, оси — UDP-поток PhysicsSync.
-- Топливо `sim m_fuel` — UDP-поток от физмастера.
-- Время симуляции — WeatherSync.
-- Клавиатурные пошаговые команды спидбрейка (`speed_brakes_*_one`) — положение рычага синхронизируется датарефом.
+- Thrust levers, reversers (`eng*_rev_angle`), yoke, rudder, brakes, axes — UDP PhysicsSync stream.
+- `sim m_fuel` — UDP fuel stream from the physics master.
+- Simulator time — WeatherSync.
+- Keyboard speedbrake step commands (`speed_brakes_*_one`) — the lever position is synced as a dataref.
 
-## Известные ограничения
+## Known limitations
 
-- **Не облётан.** Проверить в первую очередь: РУДы (плавность), запуск двигателей, EPR/масло на приборах у клиента, FMC (клавиши CDU у IXEG в основном мышиные зоны — из команд есть только CLR; если ввод в CDU клиента не будет виден — сообщите), пружинные/удерживаемые переключатели (стартеры, тесты).
-- Аудиопанели (селекторы VHF) синхронизируются, как в исходном SC-конфиге.
+- **Not flight tested.** Check first: thrust levers (smoothness), engine start, EPR/oil gauges on the client, spring-loaded/held switches (starters, tests).
+- IXEG's own failure menu exposes only 29 datarefs (electrics + hydraulics) — those sync. Other entries of the IXEG failure menu live inside Gizmo Lua and cannot be synced; use the standard X-Plane failure menu for everything else (all of those sync).
+- IXEG CDU keys are mouse zones without commands (only CLR exists in the SC config) — client FMC keystrokes may not propagate; this is a known aircraft limitation.
+- Audio panels (VHF selectors) are synced, as in the original SC config.
