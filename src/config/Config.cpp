@@ -79,7 +79,7 @@ bool Config::load(const std::string& aircraftDir)
 
 void Config::applyAutoSync(const std::string& xplanePath)
 {
-    if (cfg_.nativeConfig) {
+    if (cfg_.nativeConfig && !cfg_.autoSync) {
         // A native copilots.json is loaded — skip auto-discovery entirely.
         // Still compute drListHash so that host/client config mismatches (different
         // copilots.json versions) are caught at handshake time.
@@ -131,8 +131,9 @@ bool Config::loadJson(const std::string& path)
         json j;
         f >> j;
 
-        cfg_.name = j.value("aircraft", "Unknown Aircraft");
-        cfg_.port = j.value("port", 56900);
+        cfg_.name     = j.value("aircraft", "Unknown Aircraft");
+        cfg_.port     = j.value("port", 56900);
+        cfg_.autoSync = j.value("autoSync", false);
 
         for (const auto& jz : j.value("zones", json::array())) {
             Zone z;

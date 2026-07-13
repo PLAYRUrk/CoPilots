@@ -148,10 +148,34 @@ static bool isPhysicsOnlyDr(const std::string& path)
     // callbacks (after refreshCache already ran), so tick() sees them as local
     // user changes and echoes the stale values back to the master via TCP —
     // snapping the master's levers back and producing the throttle jitter loop.
-    // A prefix match (not hasToken("throttle")) is used so autopilot switches
-    // like sim/cockpit2/autopilot/autothrottle_on keep syncing via TCP.
     if (startsWith("sim/cockpit2/engine/actuators/throttle"))
         return true;
+
+    // CUSTOM aircraft throttle/reverser lever datarefs — generic patterns.
+    // SmartCopilot configs (Zibo, LevelUp, IXEG, …) list the aircraft's own lever
+    // datarefs, e.g. laminar/B738/engine/thrust1_leveler, laminar/B738/axis/throttle1,
+    // laminar/B738/flt_ctrls/reverse_lever1, laminar/B738/throttle_override.  The
+    // aircraft's plugin derives these from (or feeds them into) the sim throttle that
+    // PhysicsSync already streams via UDP, so TCP-syncing them re-creates the same
+    // dual-write jitter with custom paths.  Blocking here makes stock SmartCopilot
+    // configs usable without a hand-tuned copilots.json.
+    //
+    // "autothrottle" is explicitly allowed through: A/T arm switches and status flags
+    // (sim/cockpit2/autopilot/autothrottle_on, custom *autothrottle* toggles) are
+    // cockpit switches that MUST keep syncing via TCP.
+    if (hasToken("throttle") && !hasToken("autothrottle"))  return true;
+    if (hasToken("thrust") && (hasToken("lever") || hasToken("leveler")))
+        return true;
+    if (hasToken("reverse_lever") || hasToken("reverser") || hasToken("thrust_reverse"))
+        return true;
+    if (hasToken("prop_lever"))  return true;
+
+    // Custom yoke datarefs (animation copies, hide/show checklists) — either driven
+    // by PhysicsSync UDP or per-pilot cosmetic state that must stay local.
+    if (hasToken("yoke"))  return true;
+
+    // Custom toe-brake datarefs — PhysicsSync streams left/right_brake_ratio via UDP.
+    if (hasToken("toe_brake"))  return true;
 
     // mixture_ratio_all: gang write sets ALL engines at once, overriding
     // per-engine values already correctly delivered by UDP.
@@ -199,6 +223,19 @@ void SyncEngine::init(DatarefRegistry* reg, Session* session)
 
 void SyncEngine::reset()
 {
+    // Release any commands still held down by the network so a disconnect
+    // mid-hold does not leave e.g. a fire-test switch stuck forever.
+    if (reg_) {
+        for (size_t i = 0; i < heldByNet_.size() && i < reg_->commands().size(); ++i) {
+            if (heldByNet_[i] && reg_->commands()[i].handle)
+                XPLMCommandEnd(static_cast<XPLMCommandRef>(reg_->commands()[i].handle));
+        }
+    }
+    cmdEvents_.clear();
+    suppressBegin_.clear();
+    suppressEnd_.clear();
+    heldByNet_.clear();
+
     if (!reg_) { cache_.clear(); return; }
     cache_.resize(reg_->datarefs().size());
     for (size_t i = 0; i < reg_->datarefs().size(); ++i) {
@@ -420,6 +457,18 @@ void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
             continue;
         }
 
+        // Revert absorption: the aircraft's own logic (SASL/Lua that owns this
+        // dataref's state) rejected the network write and restored the PREVIOUS
+        // value.  Sending that revert back would snap the originator's switch
+        // back — the "switch flips back even on the host" write-war.  Absorb it
+        // silently; the two sims simply disagree on this dataref (only a command
+        // can move such a switch — datarefs like this belong in the commands list).
+        if (changed && c.echoFrames > 0 && isSettlingEcho(cur, c.preApply)) {
+            c.value = cur;
+            c.echoFrames = ECHO_WINDOW;
+            continue;
+        }
+
         c.value = cur;
         if (changed) {
             // Real local change: clear echo state so subsequent sends are not absorbed.
@@ -437,16 +486,11 @@ void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
         Log("SyncEngine::tick own=%d sent=%d/%zu full=%d",
             ownCount, sentCount, drs.size(), (int)doFull);
 
-    const auto& cmds = reg_->commands();
-    if (cmdPending_.size() != cmds.size())
-        cmdPending_.resize(cmds.size(), false);
-
-    for (size_t i = 0; i < cmds.size(); ++i) {
-        if (cmdPending_[i]) {
-            cmdPending_[i] = false;
-            onCmd(static_cast<uint16_t>(i));
-        }
-    }
+    // Flush queued local command edges in the order they were fired so a quick
+    // click (Begin immediately followed by End) arrives in the right order.
+    for (const auto& ev : cmdEvents_)
+        onCmd(ev.first, ev.second);
+    cmdEvents_.clear();
 }
 
 void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
@@ -494,9 +538,15 @@ void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
         }
     }
 
+    // Remember the pre-write value so tick() can recognise a revert (aircraft's own
+    // logic restoring the old value after our write) and absorb it instead of
+    // echoing it back to the sender.
+    DrValue preApply = readDr(*rd);
+
     writeDr(*rd, val);
 
     if (drIndex < cache_.size()) {
+        cache_[drIndex].preApply = std::move(preApply);
         // Store the wire value as the authoritative cache entry.  Using the exact
         // wire value (not a post-write readback) guarantees that host and client
         // converge on the same number: the readback could have been quantised by SASL
@@ -518,34 +568,74 @@ void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
     }
 }
 
-void SyncEngine::applyIncomingCommand(uint16_t cmdIndex, uint8_t senderParticipantId)
+void SyncEngine::applyIncomingCommand(uint16_t cmdIndex, uint8_t phase,
+                                       uint8_t senderParticipantId)
 {
     if (!reg_ || !session_) return;
     const RegisteredCommand* rc = reg_->getCmd(cmdIndex);
     if (!rc || !rc->handle) return;
 
-    ParticipantId auth = session_->authorityFor(rc->zoneId);
-    if (auth != senderParticipantId && auth != INVALID_PARTICIPANT_ID) return;
-    if (senderParticipantId == session_->myId()) return;
+    // Shared-cockpit command zones: _AUTO, _SHARED, and everything in SmartCopilot
+    // mode.  Any crew member may fire these; only the self-echo is dropped.  The
+    // zone-authority check below must NOT run for them: a role in copilots.json
+    // (e.g. pilot → ["_SHARED"]) makes authorityFor() return the first participant
+    // holding the zone (the host), which silently dropped every command from
+    // clients — and relayed commands (sender==0) from anyone.
+    bool sharedZone = (rc->zoneId == AUTO_ZONE_ID || rc->zoneId == SHARED_ZONE_ID
+                       || smartCopilotMode_);
+    if (sharedZone) {
+        if (senderParticipantId == session_->myId()) return;
+    } else {
+        // Zone-authority mode (senderParticipantId == 0 = relayed by the server,
+        // authority already verified on the host — trust the relay).
+        if (senderParticipantId != 0) {
+            ParticipantId auth = session_->authorityFor(rc->zoneId);
+            if (auth != senderParticipantId && auth != INVALID_PARTICIPANT_ID) return;
+            if (senderParticipantId == session_->myId()) return;
+        }
+    }
 
-    // Suppress the echo: XPLMCommandOnce triggers our registered handler
-    // synchronously, which would re-queue the command for re-sending.
-    if (cmdEchoSuppressed_.size() <= cmdIndex)
-        cmdEchoSuppressed_.resize(cmdIndex + 1, false);
-    cmdEchoSuppressed_[cmdIndex] = true;
+    // Suppress the echo: XPLMCommandBegin/End/Once trigger our registered handler
+    // synchronously with the corresponding phase(s); those self-echoes must not be
+    // re-queued for re-sending.
+    if (suppressBegin_.size() <= cmdIndex) suppressBegin_.resize(cmdIndex + 1, 0);
+    if (suppressEnd_.size()   <= cmdIndex) suppressEnd_.resize(cmdIndex + 1, 0);
+    if (heldByNet_.size()     <= cmdIndex) heldByNet_.resize(cmdIndex + 1, false);
 
-    XPLMCommandOnce(static_cast<XPLMCommandRef>(rc->handle));
+    XPLMCommandRef h = static_cast<XPLMCommandRef>(rc->handle);
+    switch (phase) {
+        case CMD_PHASE_BEGIN:
+            ++suppressBegin_[cmdIndex];
+            heldByNet_[cmdIndex] = true;
+            XPLMCommandBegin(h);
+            break;
+        case CMD_PHASE_END:
+            ++suppressEnd_[cmdIndex];
+            heldByNet_[cmdIndex] = false;
+            XPLMCommandEnd(h);
+            break;
+        default: // CMD_PHASE_ONCE — legacy/compat: a full press in one message
+            ++suppressBegin_[cmdIndex];
+            ++suppressEnd_[cmdIndex];
+            XPLMCommandOnce(h);
+            break;
+    }
 }
 
-void SyncEngine::notifyCommandFired(uint16_t cmdIndex)
+void SyncEngine::notifyCommandFired(uint16_t cmdIndex, uint8_t phase)
 {
-    if (cmdEchoSuppressed_.size() > cmdIndex && cmdEchoSuppressed_[cmdIndex]) {
-        cmdEchoSuppressed_[cmdIndex] = false;
-        return;
+    if (phase == CMD_PHASE_BEGIN) {
+        if (suppressBegin_.size() > cmdIndex && suppressBegin_[cmdIndex] > 0) {
+            --suppressBegin_[cmdIndex];
+            return;
+        }
+    } else if (phase == CMD_PHASE_END) {
+        if (suppressEnd_.size() > cmdIndex && suppressEnd_[cmdIndex] > 0) {
+            --suppressEnd_[cmdIndex];
+            return;
+        }
     }
-    if (cmdPending_.size() <= cmdIndex)
-        cmdPending_.resize(cmdIndex+1, false);
-    cmdPending_[cmdIndex] = true;
+    cmdEvents_.emplace_back(cmdIndex, phase);
 }
 
 }

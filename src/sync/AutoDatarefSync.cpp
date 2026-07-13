@@ -24,6 +24,9 @@ static const char* BLOCKED_SUBS[] = {
     "/indicators/",
     "/gauges/",
     "/outputs/",
+    // Warning-system internals (master_caution_timeout etc.) are timers/latches the
+    // sim rewrites continuously; syncing them is a permanent write-war.
+    "/warnings/",
     nullptr
 };
 

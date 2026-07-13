@@ -101,6 +101,13 @@ struct PhysicsState {
     float    g_side = 0.f;   // sim/flightmodel2/misc/gforce_side  — side load factor
     float    alpha  = 0.f;   // sim/flightmodel/position/alpha     — angle of attack, deg
     float    beta   = 0.f;   // sim/flightmodel/position/beta      — sideslip angle, deg
+
+    // Fuel per tank (kg) — sim/flightmodel/weight/m_fuel.  Clients burn fuel in
+    // their own local simulation at a slightly different rate than the master;
+    // over a flight the divergence changes aircraft weight and therefore engine
+    // parameters and trim.  Streaming the master's tank quantities keeps every
+    // participant's weight (and everything derived from it) converged.
+    float    fuel_kg[9] = {};
 };
 static_assert(sizeof(PhysicsState) < 512, "PhysicsState too large for single UDP");
 

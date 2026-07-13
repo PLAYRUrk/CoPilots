@@ -25,7 +25,7 @@ struct DrValue {
 };
 
 using DrChangedCb = std::function<void(uint16_t drIndex, const DrValue& val)>;
-using CmdFiredCb  = std::function<void(uint16_t cmdIndex)>;
+using CmdFiredCb  = std::function<void(uint16_t cmdIndex, uint8_t phase)>;
 
 class SyncEngine {
 public:
@@ -35,9 +35,9 @@ public:
 
     void applyIncoming(uint16_t drIndex, const DrValue& val, uint8_t senderParticipantId);
 
-    void applyIncomingCommand(uint16_t cmdIndex, uint8_t senderParticipantId);
+    void applyIncomingCommand(uint16_t cmdIndex, uint8_t phase, uint8_t senderParticipantId);
 
-    void notifyCommandFired(uint16_t cmdIndex);
+    void notifyCommandFired(uint16_t cmdIndex, uint8_t phase);
 
     void reset();
 
@@ -64,6 +64,11 @@ private:
     struct Cache {
         DrValue value;          // last sent/received value (authoritative)
         DrValue lastApplied;    // last value written from the network (for echo detection)
+        // Value this dataref held BEFORE the last network write.  If the aircraft's
+        // own logic (SASL/Lua) rejects our write and restores this value, the revert
+        // must be absorbed silently — echoing it back would snap the sender's switch
+        // back (write-war with the aircraft's internal state).
+        DrValue preApply;
         // Short window (frames) during which small deviations from lastApplied are
         // treated as SASL quantization noise rather than real user input.
         // Only used for FLOAT/DOUBLE/array types; INT is exact so no window needed.
@@ -74,8 +79,17 @@ private:
         bool    cmdPending     = false;
     };
     std::vector<Cache> cache_;
-    std::vector<bool>  cmdPending_;
-    std::vector<bool>  cmdEchoSuppressed_;
+    // Ordered queue of locally fired command edges (index, phase) awaiting send.
+    std::vector<std::pair<uint16_t, uint8_t>> cmdEvents_;
+    // Per-command echo suppression counters: applying an incoming Begin/End fires
+    // our own registered handler synchronously; those self-echoes must not be
+    // re-queued for sending.
+    std::vector<uint8_t> suppressBegin_;
+    std::vector<uint8_t> suppressEnd_;
+    // Commands currently held down BY THE NETWORK (XPLMCommandBegin issued without
+    // a matching End yet).  Released in reset() so a disconnect mid-hold does not
+    // leave a command stuck down forever.
+    std::vector<bool>    heldByNet_;
 
     DrValue readDr(const RegisteredDataref& rd) const;
     void    writeDr(const RegisteredDataref& rd, const DrValue& val);

@@ -24,19 +24,26 @@ struct RegisteredDataref {
     int          arrayIndex = -1;
 };
 
+// Command phase on the wire: hold-type controls (fire test switches, stall test
+// buttons, spring-loaded alternate-flaps switches, trim switches) only work when
+// BOTH edges are relayed — a single "fire once" cannot represent holding a button.
+constexpr uint8_t CMD_PHASE_ONCE  = 0;
+constexpr uint8_t CMD_PHASE_BEGIN = 1;
+constexpr uint8_t CMD_PHASE_END   = 2;
+
 struct RegisteredCommand {
     uint16_t    index;
     std::string path;
     std::string zoneId;
     void*       handle = nullptr;
-    std::function<void(uint16_t)> cb;
+    std::function<void(uint16_t, uint8_t /*phase*/)> cb;
 };
 
 class DatarefRegistry {
 public:
     void build(const std::vector<DatarefEntry>& drEntries,
                const std::vector<CommandEntry>& cmdEntries,
-               std::function<void(uint16_t)> onCommandFired = {});
+               std::function<void(uint16_t, uint8_t)> onCommandFired = {});
 
     const RegisteredDataref* getDr(uint16_t index) const;
     const RegisteredCommand* getCmd(uint16_t index) const;

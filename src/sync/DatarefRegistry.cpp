@@ -7,10 +7,14 @@ namespace cp {
 
 static int cmdHandlerCb(XPLMCommandRef, XPLMCommandPhase phase, void* refcon)
 {
-    if (phase == xplm_CommandBegin) {
-        auto* rc = static_cast<RegisteredCommand*>(refcon);
-        if (rc->cb) rc->cb(rc->index);
-    }
+    // Relay both edges so held commands (fire/stall test switches, spring-loaded
+    // alternate-flaps switch, trim switches) hold on the remote side too.
+    // CommandContinue is intentionally NOT relayed — the remote sim continues the
+    // command by itself between Begin and End.
+    auto* rc = static_cast<RegisteredCommand*>(refcon);
+    if (!rc->cb) return 1;
+    if (phase == xplm_CommandBegin)     rc->cb(rc->index, CMD_PHASE_BEGIN);
+    else if (phase == xplm_CommandEnd)  rc->cb(rc->index, CMD_PHASE_END);
     return 1; // pass through — don't consume the command
 }
 
@@ -28,7 +32,7 @@ static DrType resolveType(XPLMDataRef handle)
 
 void DatarefRegistry::build(const std::vector<DatarefEntry>& drEntries,
                              const std::vector<CommandEntry>& cmdEntries,
-                             std::function<void(uint16_t)> onCommandFired)
+                             std::function<void(uint16_t, uint8_t)> onCommandFired)
 {
     clear();
 

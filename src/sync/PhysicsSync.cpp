@@ -224,6 +224,11 @@ void PhysicsSync::sendState()
         for (int k = 0; k < 8; ++k) s.engine_running[k] = static_cast<uint8_t>(running[k]);
     }
 
+    // Fuel per tank — clients' local burn rate diverges from the master's over time,
+    // changing weight and therefore engine parameters; stream the true quantities.
+    XPLMDataRef fuelRef = XPLMFindDataRef("sim/flightmodel/weight/m_fuel");
+    if (fuelRef) XPLMGetDatavf(fuelRef, s.fuel_kg, 0, 9);
+
     // Derived aerodynamic state: read here so clients' instruments (AUASP, AoA indicator,
     // accelerometer/перегрузкомер) display values consistent with the master rather than
     // values derived from their own locally-computed kinematics.
@@ -334,12 +339,28 @@ void PhysicsSync::applyState(const proto::PhysicsState& s, double dt)
         // AUASP trip point without triggering false alerts.
         double ex = lx - rendX_, ey = ly - rendY_, ez = lz - rendZ_;
         double err = std::sqrt(ex*ex + ey*ey + ez*ez);
-        double k = (err > 1e-4)
-            ? (std::min)(MAX_BLEND_K, dt * std::sqrt(MAX_BLEND_G * 9.81 / err))
-            : MAX_BLEND_K;
-        rendX_ += k * ex;
-        rendY_ += k * ey;
-        rendZ_ += k * ez;
+
+        // --- Large-error snap ---
+        // The G-limited blend below gets WEAKER as the error grows
+        // (k ~ sqrt(1/err)), so after a big divergence — UDP stall beyond
+        // MAX_DEADRECKON_S, a master frame-rate drop, or X-Plane shifting its
+        // local coordinate origin (which invalidates rend* wholesale) — the
+        // aircraft would crawl toward the true position for many seconds,
+        // visibly flying SIDEWAYS relative to its own attitude.  Beyond the
+        // threshold an honest teleport looks far better than the crab.
+        if (err > SNAP_ERR_M) {
+            static int snapLog = 0;
+            if (snapLog < 50)
+                { ++snapLog; Log("PhysicsSync: position error %.1f m > %.0f m — snapping to master position", err, SNAP_ERR_M); }
+            rendX_ = lx;  rendY_ = ly;  rendZ_ = lz;
+        } else {
+            double k = (err > 1e-4)
+                ? (std::min)(MAX_BLEND_K, dt * std::sqrt(MAX_BLEND_G * 9.81 / err))
+                : MAX_BLEND_K;
+            rendX_ += k * ex;
+            rendY_ += k * ey;
+            rendZ_ += k * ez;
+        }
     }
 
     auto wdbl = [](const char* path, double val) {
@@ -450,14 +471,36 @@ void PhysicsSync::applyState(const proto::PhysicsState& s, double dt)
     wflt("sim/cockpit2/controls/left_brake_ratio",  s.left_brake);
     wflt("sim/cockpit2/controls/right_brake_ratio", s.right_brake);
 
-    // Engine N1/N2/running are intentionally NOT overridden here.
+    // Engine N1/N2/running: written every tick from the master's real flight-model
+    // values.  Without this, each client's local engine simulation integrates its own
+    // RPM from the synced throttle position, and two independent simulations diverge
+    // over a flight (observed: master 80% vs client 92% N1 at the same lever position —
+    // fuel-burn/weight divergence compounds the drift).
     //
-    // With override_planepath removed, the local flight-model runs freely and computes
-    // its own engine state from the already-synced fuel, throttle, and start commands.
-    // Writing N1/N2 over the top would fight the live SASL simulation (Tu-154) and
-    // produce RPM oscillation rather than fixing it.  The PhysicsState still carries
-    // engine_N1/N2/running (transmitted but now unused on the receive side); they remain
-    // in the struct so sendState() can evolve without a protocol break.
+    // Writing here is convergent, not oscillatory: this callback runs
+    // AfterFlightModel, so each frame the local model computes its next state FROM
+    // the master's value we wrote last frame instead of from its own diverged state.
+    // The local simulation keeps running (spool dynamics, SASL systems), but is
+    // re-anchored to the master's RPM at 60 Hz.
+    {
+        XPLMDataRef n1Real = XPLMFindDataRef("sim/flightmodel/engine/ENGN_N1_");
+        if (n1Real) XPLMSetDatavf(n1Real, const_cast<float*>(s.engine_N1), 0, 8);
+        XPLMDataRef n2Real = XPLMFindDataRef("sim/flightmodel/engine/ENGN_N2_");
+        if (n2Real) XPLMSetDatavf(n2Real, const_cast<float*>(s.engine_N2), 0, 8);
+        XPLMDataRef engRun = XPLMFindDataRef("sim/flightmodel/engine/ENGN_running");
+        if (engRun) {
+            int running[8];
+            for (int k = 0; k < 8; ++k) running[k] = s.engine_running[k];
+            XPLMSetDatavi(engRun, running, 0, 8);
+        }
+    }
+
+    // Fuel per tank: pin to the master's quantities so weight (and everything derived
+    // from it — trim, engine parameters, performance) stays converged across the crew.
+    {
+        XPLMDataRef fuelRef = XPLMFindDataRef("sim/flightmodel/weight/m_fuel");
+        if (fuelRef) XPLMSetDatavf(fuelRef, const_cast<float*>(s.fuel_kg), 0, 9);
+    }
 
     // Derived aerodynamic state: write the master's G-load and AoA so that the client's
     // instruments show values consistent with the master (fixes the ~1g vs ~1.5g divergence

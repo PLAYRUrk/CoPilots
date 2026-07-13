@@ -52,6 +52,13 @@ private:
     static constexpr double MAX_BLEND_G    = 1.5;   // max corrective G (was 0.8)
     static constexpr double MAX_DEADRECKON_S = 1.0; // cap feed-forward on UDP stall
 
+    // Above this position error the G-limited blend is abandoned and the aircraft
+    // snaps directly to the master's position.  The blend coefficient shrinks as
+    // the error grows (k ~ sqrt(1/err)), so large divergences (UDP stall, master
+    // fps drop, local-origin shift) would otherwise take many seconds to converge
+    // with the aircraft visibly flying sideways relative to its attitude.
+    static constexpr double SNAP_ERR_M     = 100.0;
+
     void sendState();
     void applyState(const proto::PhysicsState& s, double dt);
 };

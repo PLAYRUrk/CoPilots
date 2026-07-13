@@ -244,8 +244,8 @@ struct CoPilotsPlugin {
                 [this](uint16_t idx, const cp::DrValue& val) {
                     sendDatarefSet(idx, val);
                 },
-                [this](uint16_t idx) {
-                    sendCommandFire(idx);
+                [this](uint16_t idx, uint8_t phase) {
+                    sendCommandFire(idx, phase);
                 }
             );
         }
@@ -588,12 +588,13 @@ struct CoPilotsPlugin {
         }
 
         case MT::COMMAND_FIRE: {
-            uint16_t idx = r.u16();
+            uint16_t idx   = r.u16();
+            uint8_t  phase = r.u8();   // CMD_PHASE_*; reads 0 (ONCE) on legacy frames
             {
                 uint8_t effectiveSender = msg.sender;
                 auto it = connIdMap_.find(msg.sender);
                 if (it != connIdMap_.end()) effectiveSender = it->second;
-                syncEngine.applyIncomingCommand(idx, effectiveSender);
+                syncEngine.applyIncomingCommand(idx, phase, effectiveSender);
             }
             if (session.isHost()) {
                 cp::net::OutboundMsg relay;
@@ -1060,9 +1061,9 @@ struct CoPilotsPlugin {
         netThread.outTcp.push(std::move(out));
     }
 
-    void sendCommandFire(uint16_t idx)
+    void sendCommandFire(uint16_t idx, uint8_t phase)
     {
-        auto b = cp::proto::MsgBuilder(cp::proto::MsgType::COMMAND_FIRE).u16(idx);
+        auto b = cp::proto::MsgBuilder(cp::proto::MsgType::COMMAND_FIRE).u16(idx).u8(phase);
         cp::net::OutboundMsg out;
         out.target = 0xFF;
         out.frame  = b.build();
@@ -1091,7 +1092,7 @@ struct CoPilotsPlugin {
         connWin.setData(&session, &config.get());
 
         registry.build(config.get().datarefs, config.get().commands,
-                       [this](uint16_t idx) { syncEngine.notifyCommandFired(idx); });
+                       [this](uint16_t idx, uint8_t phase) { syncEngine.notifyCommandFired(idx, phase); });
         syncEngine.init(&registry, &session);
         syncEngine.setSmartCopilotMode(config.get().fromSmartCopilot);
         physicsSync.init(&session, &netThread);
@@ -1136,7 +1137,7 @@ struct CoPilotsPlugin {
         }
 
         registry.build(config.get().datarefs, config.get().commands,
-                       [this](uint16_t idx) { syncEngine.notifyCommandFired(idx); });
+                       [this](uint16_t idx, uint8_t phase) { syncEngine.notifyCommandFired(idx, phase); });
         syncEngine.init(&registry, &session);
         syncEngine.setSmartCopilotMode(config.get().fromSmartCopilot);
         physicsSync.init(&session, &netThread);
@@ -1189,7 +1190,7 @@ struct CoPilotsPlugin {
                 config.applyAutoSync(xpPath);
             }
             registry.build(config.get().datarefs, config.get().commands,
-                           [this](uint16_t idx) { syncEngine.notifyCommandFired(idx); });
+                           [this](uint16_t idx, uint8_t phase) { syncEngine.notifyCommandFired(idx, phase); });
             syncEngine.reset();
         }
     }

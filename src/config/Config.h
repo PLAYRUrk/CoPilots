@@ -11,8 +11,13 @@ struct AircraftConfig {
     uint16_t                port      = 56900;
     bool                    fromSmartCopilot = false;
     // True when a native copilots.json was found.  applyAutoSync() is a no-op in
-    // this case (auto-discovery is only the fallback when no native config exists).
+    // this case (auto-discovery is only the fallback when no native config exists),
+    // unless the JSON sets "autoSync": true.
     bool                    nativeConfig = false;
+    // "autoSync": true in copilots.json — run DataRefs.txt auto-discovery IN ADDITION
+    // to the manual entries.  Lets aircraft-specific configs cover only the custom
+    // (laminar/…) datarefs while standard sim/cockpit2/… switches keep syncing.
+    bool                    autoSync = false;
     uint32_t                drListHash = 0; // FNV-1a over ordered dataref paths
 
     std::vector<Zone>        zones;
