@@ -1215,7 +1215,6 @@
     { "path": "BetterPushback/connect_first", "zone": "_SHARED" },
     { "path": "BetterPushback/disconnect", "zone": "_SHARED" },
     { "path": "BetterPushback/reconnect", "zone": "_SHARED" },
-    { "path": "sim/operation/pause_toggle", "zone": "_SHARED" },
     { "path": "sim/engines/TOGA_power", "zone": "_SHARED" },
     { "path": "sim/autopilot/autothrottle_toggle", "zone": "_SHARED" },
     { "path": "sim/flight_controls/pitch_trim_up", "zone": "_SHARED" },

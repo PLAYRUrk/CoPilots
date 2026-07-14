@@ -49,6 +49,8 @@ enum class MsgType : uint8_t {
     FMS_LIST           = 0x50,  // any → host → all: inventory of Output/FMS plans {name,size,hash}
     FMS_REQUEST        = 0x51,  // any → host → all: request files missing locally (by name)
     FMS_FILE           = 0x52,  // any → host → all: one flight-plan file (name + raw bytes)
+    PAUSE_STATE        = 0x53,  // any → host → all: sim/time/paused changed (u8: 0/1) —
+                                //   covers keyboard pause AND auto-pause (menus/settings)
 
     HEARTBEAT          = 0xF0,
     CHAT               = 0xF1,

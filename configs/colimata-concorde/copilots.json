@@ -2328,7 +2328,6 @@
     { "path": "de/philippmuenzel/xciva/cdu/clear", "zone": "_SHARED" },
     { "path": "de/philippmuenzel/xciva/cdu/79", "zone": "_SHARED" },
     { "path": "de/philippmuenzel/xciva/cdu/39", "zone": "_SHARED" },
-    { "path": "sim/operation/pause_toggle", "zone": "_SHARED" },
     { "path": "sim/operation/freeze_toggle", "zone": "_SHARED" },
     { "path": "sim/instruments/timer_cycle", "zone": "_SHARED" },
     { "path": "sim/systems/no_smoking_toggle", "zone": "_SHARED" },

@@ -910,7 +910,6 @@
     { "path": "sim/cockpit2/controls/aileron_trim", "zone": "_SHARED", "mode": "continuous" }
   ],
   "commands": [
-    { "path": "sim/operation/pause_toggle", "zone": "_SHARED" },
     { "path": "sim/operation/freeze_toggle", "zone": "_SHARED" },
     { "path": "sim/instruments/timer_cycle", "zone": "_SHARED" },
     { "path": "sim/systems/no_smoking_toggle", "zone": "_SHARED" },

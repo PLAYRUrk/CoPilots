@@ -72,6 +72,16 @@ struct CoPilotsPlugin {
 
     bool active = false;
 
+    // ── Pause synchronisation ────────────────────────────────────────────────
+    // The pause STATE (sim/time/paused) is mirrored, not the toggle command:
+    // state sync also covers auto-pause from menus/settings screens, and two
+    // diverged sims converge instead of swapping states like a relayed toggle.
+    XPLMDataRef    drPaused_       = nullptr;
+    XPLMCommandRef cmdPauseToggle_ = nullptr;
+    int  lastPaused_     = -1;   // last observed local state
+    int  expectedPaused_ = -1;   // state we just commanded on behalf of the network
+    bool pauseConnected_ = false;
+
     void onEnable()
     {
         Log("Plugin enabled");
@@ -221,6 +231,8 @@ struct CoPilotsPlugin {
             XPLMGetSystemPath(xpPath);
             fmsSync.init(&netThread, xpPath);
         }
+        drPaused_       = XPLMFindDataRef("sim/time/paused");
+        cmdPauseToggle_ = XPLMFindCommand("sim/operation/pause_toggle");
 
         XPLMCreateFlightLoop_t params{};
         params.structSize = sizeof(params);
@@ -341,6 +353,36 @@ struct CoPilotsPlugin {
 
         // Flight-plan folder sync (Output/FMS plans): announce + periodic rescan.
         fmsSync.tick(static_cast<float>(dt), netThread.connected);
+
+        // Pause-state sync: broadcast local changes of sim/time/paused.
+        if (drPaused_) {
+            if (netThread.connected) {
+                int p = XPLMGetDatai(drPaused_);
+                if (!pauseConnected_) {
+                    // Session just started — take the current state as the baseline
+                    // without broadcasting it (a joining client must not force its
+                    // pause state onto a flying crew).
+                    pauseConnected_ = true;
+                    lastPaused_     = p;
+                    expectedPaused_ = -1;
+                } else if (p != lastPaused_) {
+                    lastPaused_ = p;
+                    if (p == expectedPaused_) {
+                        // This change was commanded by the network — don't echo it.
+                        expectedPaused_ = -1;
+                    } else {
+                        auto frame = cp::proto::MsgBuilder(cp::proto::MsgType::PAUSE_STATE)
+                                         .u8(static_cast<uint8_t>(p != 0)).build();
+                        cp::net::OutboundMsg out;
+                        out.target = 0xFF;
+                        out.frame  = std::move(frame);
+                        netThread.outTcp.push(std::move(out));
+                    }
+                }
+            } else {
+                pauseConnected_ = false;
+            }
+        }
 
         if (netThread.hasError) {
             connWin.setState(cp::ui::ConnState::CONNECT_ERROR, netThread.lastError);
@@ -630,6 +672,32 @@ struct CoPilotsPlugin {
                 cp::net::OutboundMsg relay;
                 relay.target        = 0xFF;
                 relay.excludeTarget = msg.sender;  // don't echo back to the originator
+                relay.frame.resize(5 + msg.payload.size());
+                relay.frame[0] = msg.type;
+                uint32_t plen = static_cast<uint32_t>(msg.payload.size());
+                relay.frame[1] = plen & 0xFF;
+                relay.frame[2] = (plen>>8) & 0xFF;
+                relay.frame[3] = (plen>>16) & 0xFF;
+                relay.frame[4] = (plen>>24) & 0xFF;
+                std::copy(msg.payload.begin(), msg.payload.end(), relay.frame.begin()+5);
+                netThread.outTcp.push(std::move(relay));
+            }
+            break;
+        }
+
+        case MT::PAUSE_STATE: {
+            uint8_t p = r.u8();
+            if (drPaused_ && cmdPauseToggle_) {
+                int cur = XPLMGetDatai(drPaused_);
+                if ((cur != 0) != (p != 0)) {
+                    expectedPaused_ = (p != 0) ? 1 : 0;
+                    XPLMCommandOnce(cmdPauseToggle_);
+                }
+            }
+            if (session.isHost()) {
+                cp::net::OutboundMsg relay;
+                relay.target        = 0xFF;
+                relay.excludeTarget = msg.sender;
                 relay.frame.resize(5 + msg.payload.size());
                 relay.frame[0] = msg.type;
                 uint32_t plen = static_cast<uint32_t>(msg.payload.size());
