@@ -53,6 +53,7 @@ set(COPILOTS_SOURCES
     src/sync/PhysicsSync.cpp
     src/sync/WeatherSync.cpp
     src/sync/AutoDatarefSync.cpp
+    src/sync/FmsPlanSync.cpp
 
     src/session/Session.cpp
 

@@ -4,6 +4,7 @@
 #include "sync/SyncEngine.h"
 #include "sync/PhysicsSync.h"
 #include "sync/WeatherSync.h"
+#include "sync/FmsPlanSync.h"
 #include "session/Session.h"
 #include "net/NetThread.h"
 #include "net/Protocol.h"
@@ -42,6 +43,7 @@ struct CoPilotsPlugin {
     cp::SyncEngine          syncEngine;
     cp::PhysicsSync         physicsSync;
     cp::WeatherSync         weatherSync;
+    cp::FmsPlanSync         fmsSync;
 
     cp::ui::ConnectionWindow connWin;
     cp::ui::StatusHud        statusHud;
@@ -214,6 +216,11 @@ struct CoPilotsPlugin {
         statusHud.onToggleConn    = [this]() { connWin.setVisible(!connWin.visible()); };
         statusHud.onToggleNotepad = [this]() { notepadWin.setVisible(!notepadWin.visible()); };
         weatherSync.init(&session, &netThread);
+        {
+            char xpPath[512] = {};
+            XPLMGetSystemPath(xpPath);
+            fmsSync.init(&netThread, xpPath);
+        }
 
         XPLMCreateFlightLoop_t params{};
         params.structSize = sizeof(params);
@@ -331,6 +338,9 @@ struct CoPilotsPlugin {
 
         if (netThread.connected)
             weatherSync.tick(1.f / 60.f);
+
+        // Flight-plan folder sync (Output/FMS plans): announce + periodic rescan.
+        fmsSync.tick(static_cast<float>(dt), netThread.connected);
 
         if (netThread.hasError) {
             connWin.setState(cp::ui::ConnState::CONNECT_ERROR, netThread.lastError);
@@ -616,6 +626,31 @@ struct CoPilotsPlugin {
             }
             syncEngine.applyIncoming(idx, val, effectiveSender);
 
+            if (session.isHost()) {
+                cp::net::OutboundMsg relay;
+                relay.target        = 0xFF;
+                relay.excludeTarget = msg.sender;  // don't echo back to the originator
+                relay.frame.resize(5 + msg.payload.size());
+                relay.frame[0] = msg.type;
+                uint32_t plen = static_cast<uint32_t>(msg.payload.size());
+                relay.frame[1] = plen & 0xFF;
+                relay.frame[2] = (plen>>8) & 0xFF;
+                relay.frame[3] = (plen>>16) & 0xFF;
+                relay.frame[4] = (plen>>24) & 0xFF;
+                std::copy(msg.payload.begin(), msg.payload.end(), relay.frame.begin()+5);
+                netThread.outTcp.push(std::move(relay));
+            }
+            break;
+        }
+
+        case MT::FMS_LIST:
+        case MT::FMS_REQUEST:
+        case MT::FMS_FILE: {
+            switch (static_cast<MT>(msg.type)) {
+                case MT::FMS_LIST:    fmsSync.onList(r);    break;
+                case MT::FMS_REQUEST: fmsSync.onRequest(r); break;
+                default:              fmsSync.onFile(r);    break;
+            }
             if (session.isHost()) {
                 cp::net::OutboundMsg relay;
                 relay.target        = 0xFF;
