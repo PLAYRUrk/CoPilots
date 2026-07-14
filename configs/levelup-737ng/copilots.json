@@ -268,7 +268,7 @@
     { "path": "laminar/B738/electric/generic_brightness[12]", "zone": "_SHARED" },
     { "path": "sim/flightmodel/controls/parkbrake", "zone": "_SHARED", "mode": "continuous" },
     { "path": "laminar/B738/parking_brake_pos", "zone": "_SHARED", "mode": "continuous" },
-    { "path": "sim/cockpit2/controls/elevator_trim", "zone": "_SHARED", "mode": "continuous", "upCommand": "laminar/B738/flight_controls/pitch_trim_up", "downCommand": "laminar/B738/flight_controls/pitch_trim_down" },
+    { "path": "sim/cockpit2/controls/elevator_trim", "zone": "_SHARED", "mode": "continuous" },
     { "path": "sim/cockpit2/controls/rudder_trim", "zone": "_SHARED", "mode": "continuous" },
     { "path": "sim/operation/failures/oil_power_thrust_ratio[0]", "zone": "_SHARED" },
     { "path": "sim/operation/failures/oil_power_thrust_ratio[1]", "zone": "_SHARED" },
