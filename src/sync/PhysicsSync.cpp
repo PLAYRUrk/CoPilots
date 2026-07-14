@@ -46,6 +46,9 @@ void PhysicsSync::reset()
 
     XPLMDataRef joyOvr = XPLMFindDataRef("sim/operation/override/override_joystick");
     if (joyOvr) { int z = 0; XPLMSetDatai(joyOvr, z); }
+
+    XPLMDataRef tbOvr = XPLMFindDataRef("sim/operation/override/override_toe_brakes");
+    if (tbOvr) { int z = 0; XPLMSetDatai(tbOvr, z); }
 }
 
 void PhysicsSync::tick(double dt)
@@ -82,6 +85,8 @@ void PhysicsSync::tick(double dt)
         if (joyOvr) { int v = 1; XPLMSetDatai(joyOvr, v); }
         XPLMDataRef ovPath = XPLMFindDataRef("sim/operation/override/override_planepath");
         if (ovPath) { int v = 1; XPLMSetDatavi(ovPath, &v, 0, 1); }
+        XPLMDataRef tbOvr = XPLMFindDataRef("sim/operation/override/override_toe_brakes");
+        if (tbOvr) { int v = 1; XPLMSetDatai(tbOvr, v); }
     }
     wasPhysicsMaster_ = amMaster;
 
@@ -93,6 +98,8 @@ void PhysicsSync::tick(double dt)
         if (joyOvr) { int z = 0; XPLMSetDatai(joyOvr, z); }
         XPLMDataRef ovPath = XPLMFindDataRef("sim/operation/override/override_planepath");
         if (ovPath) { int z = 0; XPLMSetDatavi(ovPath, &z, 0, 1); }
+        XPLMDataRef tbOvr = XPLMFindDataRef("sim/operation/override/override_toe_brakes");
+        if (tbOvr) { int z = 0; XPLMSetDatai(tbOvr, z); }
 
         sendState();
     } else if (hasState_) {
@@ -122,6 +129,8 @@ void PhysicsSync::tick(double dt)
         if (joyOvr) { int v = 1; XPLMSetDatai(joyOvr, v); }
         XPLMDataRef ovPath = XPLMFindDataRef("sim/operation/override/override_planepath");
         if (ovPath) { int v = 1; XPLMSetDatavi(ovPath, &v, 0, 1); }
+        XPLMDataRef tbOvr = XPLMFindDataRef("sim/operation/override/override_toe_brakes");
+        if (tbOvr) { int v = 1; XPLMSetDatai(tbOvr, v); }
     }
 }
 
@@ -417,6 +426,13 @@ void PhysicsSync::applyState(const proto::PhysicsState& s, double dt)
     // Override local joystick so incoming control values from physics master take effect
     XPLMDataRef joyOvr = XPLMFindDataRef("sim/operation/override/override_joystick");
     if (joyOvr) { int v = 1; XPLMSetDatai(joyOvr, v); }
+
+    // Toe brakes have their OWN override — override_joystick does NOT cover the
+    // brake axes.  Without this, the passenger's own pedals (even calibration
+    // noise around zero) keep dragging the brakes under the master's taxi:
+    // heated brakes, sagging brake pressure and position-blend judder.
+    XPLMDataRef tbOvr = XPLMFindDataRef("sim/operation/override/override_toe_brakes");
+    if (tbOvr) { int v = 1; XPLMSetDatai(tbOvr, v); }
 
     wflt("sim/joystick/yoke_roll_ratio",    s.aileron);
     wflt("sim/joystick/yoke_pitch_ratio",   s.elevator);
