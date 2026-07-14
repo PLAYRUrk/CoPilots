@@ -85,6 +85,11 @@ private:
         // (see RegisteredDataref::toggleHandle) so a slow Lua doesn't get
         // double-toggled before its state settles.
         int     toggleCooldown = 0;
+        // Readback at the previous toggle check.  The toggle only fires when the
+        // local value is STABLE (two consecutive checks agree): animated levers
+        // (Zibo parking brake travels 0→1 over ~a second) must never be toggled
+        // mid-travel or they oscillate forever.
+        DrValue toggleLastSeen;
         bool    cmdPending     = false;
     };
     std::vector<Cache> cache_;

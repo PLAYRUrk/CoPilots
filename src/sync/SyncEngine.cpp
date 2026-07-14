@@ -557,14 +557,21 @@ void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
 
     // Lua-owned state with a paired toggle command (e.g. Zibo's parking brake):
     // the write above is reverted by the aircraft's logic — fire the toggle so the
-    // aircraft's INTERNAL state flips to match the wire value.  Cooldown guards
-    // against double-toggling while the Lua state settles.
-    if (rd->toggleHandle && drIndex < cache_.size()
-        && cache_[drIndex].toggleCooldown == 0
-        && exceedsSyncThreshold(preApply, val)) {
+    // aircraft's INTERNAL state flips to match the wire value.
+    //
+    // Two guards against oscillation:
+    //   - cooldown: a slow Lua must not be double-toggled before it reacts;
+    //   - stability: animated levers (Zibo's parking brake handle travels 0→1
+    //     over ~a second) are only toggled when two consecutive checks read the
+    //     SAME local value — never mid-travel, which would reverse the animation
+    //     and bounce the lever between 0.2 and 0.8 forever.
+    if (rd->toggleHandle && drIndex < cache_.size()) {
+        Cache& tc = cache_[drIndex];
         DrValue after = readDr(*rd);
-        if (exceedsSyncThreshold(after, val)) {
-            cache_[drIndex].toggleCooldown = 60;  // ~1 s at 60 fps
+        bool stable = after.approxEqual(tc.toggleLastSeen);
+        tc.toggleLastSeen = after;
+        if (tc.toggleCooldown == 0 && stable && exceedsSyncThreshold(after, val)) {
+            tc.toggleCooldown = 90;  // ~1.5 s at 60 fps
             XPLMCommandOnce(static_cast<XPLMCommandRef>(rd->toggleHandle));
         }
     }
