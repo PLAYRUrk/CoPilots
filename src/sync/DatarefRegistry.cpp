@@ -105,6 +105,10 @@ void DatarefRegistry::build(const std::vector<DatarefEntry>& drEntries,
         }
     }
     Log("DatarefRegistry: registered %zu commands", commands_.size());
+    // Integrity checkpoint: the dataref vector must still report the same size it
+    // logged above — a mismatch here means something corrupted the heap during
+    // command registration (diagnostic for the 898 → 1105 crash).
+    Log("DatarefRegistry: integrity dr=%zu cmd=%zu", datarefs_.size(), commands_.size());
 }
 
 const RegisteredDataref* DatarefRegistry::getDr(uint16_t index) const

@@ -1265,15 +1265,22 @@ struct CoPilotsPlugin {
 
         registry.build(config.get().datarefs, config.get().commands,
                        [this](uint16_t idx, uint8_t phase) { syncEngine.notifyCommandFired(idx, phase); });
+        Log("onHost: registry built (cfg=%zu reg=%zu cmds=%zu), initialising engines",
+            config.get().datarefs.size(), registry.datarefs().size(),
+            registry.commands().size());
         syncEngine.init(&registry, &session);
+        Log("onHost: syncEngine ready");
         syncEngine.setSmartCopilotMode(config.get().fromSmartCopilot);
         physicsSync.init(&session, &netThread);
+        Log("onHost: physicsSync ready");
         weatherSync.init(&session, &netThread, xpSystemPath_);
+        Log("onHost: weatherSync ready");
 
         session.setIsHost(true);
         cp::ParticipantId myId = session.addParticipant(cfg.nick);
         session.setMyId(myId);
 
+        Log("onHost: starting server");
         netThread.startServer(cfg.port, cfg.port, cfg.bindIp);
 
         std::vector<std::string> allIps;
@@ -1310,10 +1317,14 @@ struct CoPilotsPlugin {
 
         registry.build(config.get().datarefs, config.get().commands,
                        [this](uint16_t idx, uint8_t phase) { syncEngine.notifyCommandFired(idx, phase); });
+        Log("onJoin: registry built, initialising engines");
         syncEngine.init(&registry, &session);
+        Log("onJoin: syncEngine ready");
         syncEngine.setSmartCopilotMode(config.get().fromSmartCopilot);
         physicsSync.init(&session, &netThread);
+        Log("onJoin: physicsSync ready");
         weatherSync.init(&session, &netThread, xpSystemPath_);
+        Log("onJoin: weatherSync ready, connecting");
 
         netThread.startClient(cfg.host, cfg.port, cfg.port);
 

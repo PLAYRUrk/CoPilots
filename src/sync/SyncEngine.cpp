@@ -237,12 +237,14 @@ void SyncEngine::reset()
     heldByNet_.clear();
 
     if (!reg_) { cache_.clear(); return; }
+    Log("SyncEngine::reset: priming cache for %zu datarefs", reg_->datarefs().size());
     cache_.resize(reg_->datarefs().size());
     for (size_t i = 0; i < reg_->datarefs().size(); ++i) {
         const auto& rd = reg_->datarefs()[i];
         if (rd.handle)
             cache_[i].value = readDr(rd);
     }
+    Log("SyncEngine::reset: cache primed");
 }
 
 DrValue SyncEngine::readDr(const RegisteredDataref& rd) const
