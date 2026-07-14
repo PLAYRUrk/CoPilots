@@ -1560,7 +1560,6 @@
     { "path": "BetterPushback/start", "zone": "_SHARED" },
     { "path": "BetterPushback/connect_first", "zone": "_SHARED" },
     { "path": "BetterPushback/disconnect", "zone": "_SHARED" },
-    { "path": "laminar/B738/button/allign_analog_horiz", "zone": "_SHARED" },
     { "path": "BetterPushback/reconnect", "zone": "_SHARED" }
   ]
 }
