@@ -4,7 +4,7 @@
     {
       "folder": "levelup-737ng",
       "aircraft": "LevelUp Boeing 737NG",
-      "match": ["levelup", "level up", "lu737", "737ng", "b736", "b737-600", "b737-700", "b737-800", "b737-900", "zibo", "b738x"]
+      "match": ["levelup", "level up", "lu737", "737ng"]
     },
     {
       "folder": "colimata-concorde",
