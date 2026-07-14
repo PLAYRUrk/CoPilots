@@ -157,6 +157,8 @@ bool Config::loadJson(const std::string& path)
             d.zoneId    = jd.at("zone").get<std::string>();
             d.mode      = parseSyncMode(jd.value("mode", "onchange"));
             d.toggleCmd = jd.value("toggleCommand", "");
+            d.upCmd     = jd.value("upCommand", "");
+            d.downCmd   = jd.value("downCommand", "");
             cfg_.datarefs.push_back(std::move(d));
         }
 

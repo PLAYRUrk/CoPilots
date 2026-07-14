@@ -25,6 +25,10 @@ struct RegisteredDataref {
     // Optional toggle command fired when a network write gets reverted by the
     // aircraft's own logic (see DatarefEntry::toggleCmd).
     void*        toggleHandle = nullptr;
+    // Optional increment/decrement command pair for numeric Lua-owned state
+    // (see DatarefEntry::upCmd/downCmd).
+    void*        upHandle   = nullptr;
+    void*        downHandle = nullptr;
 };
 
 // Command phase on the wire: hold-type controls (fire test switches, stall test

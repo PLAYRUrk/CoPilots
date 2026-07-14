@@ -576,6 +576,28 @@ void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
         }
     }
 
+    // Nudge-follow for NUMERIC Lua-owned state (e.g. Zibo's stab trim): the write
+    // above gets reverted by the aircraft's logic, so instead step the local value
+    // toward the wire value with the aircraft's own inc/dec commands.  One step per
+    // few frames; while the master keeps trimming we receive writes every tick, so
+    // the follower trails smoothly and settles once the values converge.
+    if ((rd->upHandle || rd->downHandle) && drIndex < cache_.size()
+        && (val.type == DrType::FLOAT || val.type == DrType::DOUBLE)) {
+        Cache& nc = cache_[drIndex];
+        if (nc.toggleCooldown == 0) {
+            DrValue after = readDr(*rd);
+            if (exceedsSyncThreshold(after, val)) {
+                double cur = (val.type == DrType::FLOAT) ? after.f : after.d;
+                double tgt = (val.type == DrType::FLOAT) ? val.f   : val.d;
+                void* h = (cur < tgt) ? rd->upHandle : rd->downHandle;
+                if (h) {
+                    nc.toggleCooldown = 6;  // ~10 steps/s
+                    XPLMCommandOnce(static_cast<XPLMCommandRef>(h));
+                }
+            }
+        }
+    }
+
     if (drIndex < cache_.size()) {
         cache_[drIndex].preApply = std::move(preApply);
         // Store the wire value as the authoritative cache entry.  Using the exact
