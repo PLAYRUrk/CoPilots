@@ -1,6 +1,10 @@
 {
-  "aircraft": "LevelUp Boeing 737NG (Zibo 3.40 XP11 community map)",
-  "port": 25565,
+  "aircraft": "LevelUp Boeing 737NG",
+  "configVersion": "1.0.0",
+  "aircraftVersion": "LevelUp 737NG series (XP11)",
+  "xplaneVersion": "11.5x",
+  "basedOn": "smartcopilot.cfg by Birdy.dma for Zibo 3.40.19 / XP 11.41",
+  "port": 56900,
   "_comment": "Generated from Birdy.dma smartcopilot.cfg (Zibo 3.40.19 / XP 11.41). TRIGGERS+RADIO+SLOW -> onchange datarefs; parking brake + trim from CONTINUED -> continuous (physics-master-only) datarefs; COMMANDS -> commands with hold (begin/end) relay. autoSync OFF: DataRefs.txt discovery duplicated Zibo custom state via sim/ mirrors and caused knob jitter/rollback; this list is the complete community-tested set.",
   "autoSync": false,
   "zones": [ { "id": "_SHARED", "name": "Shared cockpit" } ],
@@ -264,7 +268,7 @@
     { "path": "laminar/B738/electric/generic_brightness[12]", "zone": "_SHARED" },
     { "path": "sim/flightmodel/controls/parkbrake", "zone": "_SHARED", "mode": "continuous" },
     { "path": "laminar/B738/parking_brake_pos", "zone": "_SHARED", "mode": "continuous" },
-    { "path": "sim/cockpit2/controls/elevator_trim", "zone": "_SHARED", "mode": "continuous" },
+    { "path": "sim/cockpit2/controls/elevator_trim", "zone": "_SHARED", "mode": "continuous", "upCommand": "laminar/B738/flight_controls/pitch_trim_up", "downCommand": "laminar/B738/flight_controls/pitch_trim_down" },
     { "path": "sim/cockpit2/controls/rudder_trim", "zone": "_SHARED", "mode": "continuous" },
     { "path": "sim/operation/failures/oil_power_thrust_ratio[0]", "zone": "_SHARED" },
     { "path": "sim/operation/failures/oil_power_thrust_ratio[1]", "zone": "_SHARED" },
@@ -906,7 +910,6 @@
     { "path": "sim/cockpit2/controls/aileron_trim", "zone": "_SHARED", "mode": "continuous" }
   ],
   "commands": [
-    { "path": "sim/operation/pause_toggle", "zone": "_SHARED" },
     { "path": "sim/operation/freeze_toggle", "zone": "_SHARED" },
     { "path": "sim/instruments/timer_cycle", "zone": "_SHARED" },
     { "path": "sim/systems/no_smoking_toggle", "zone": "_SHARED" },
@@ -1557,6 +1560,7 @@
     { "path": "BetterPushback/start", "zone": "_SHARED" },
     { "path": "BetterPushback/connect_first", "zone": "_SHARED" },
     { "path": "BetterPushback/disconnect", "zone": "_SHARED" },
+    { "path": "laminar/B738/button/allign_analog_horiz", "zone": "_SHARED" },
     { "path": "BetterPushback/reconnect", "zone": "_SHARED" }
   ]
 }

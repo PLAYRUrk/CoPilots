@@ -81,15 +81,6 @@ private:
         // Frames elapsed since this side last made a real local change.
         // Used by the reconciliation path to avoid overwriting recent user input.
         int     framesSinceLocalChange = 9999;
-        // Cooldown between toggle-command firings for Lua-owned state datarefs
-        // (see RegisteredDataref::toggleHandle) so a slow Lua doesn't get
-        // double-toggled before its state settles.
-        int     toggleCooldown = 0;
-        // Readback at the previous toggle check.  The toggle only fires when the
-        // local value is STABLE (two consecutive checks agree): animated levers
-        // (Zibo parking brake travels 0→1 over ~a second) must never be toggled
-        // mid-travel or they oscillate forever.
-        DrValue toggleLastSeen;
         bool    cmdPending     = false;
     };
     std::vector<Cache> cache_;

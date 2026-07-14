@@ -428,7 +428,6 @@ void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
 
         // Tick echo-absorption window every frame regardless of whether we send.
         if (c.echoFrames > 0) --c.echoFrames;
-        if (c.toggleCooldown > 0) --c.toggleCooldown;
         ++c.framesSinceLocalChange;
 
         DrValue cur = readDr(rd);
@@ -554,49 +553,6 @@ void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
     DrValue preApply = readDr(*rd);
 
     writeDr(*rd, val);
-
-    // Lua-owned state with a paired toggle command (e.g. Zibo's parking brake):
-    // the write above is reverted by the aircraft's logic — fire the toggle so the
-    // aircraft's INTERNAL state flips to match the wire value.
-    //
-    // Two guards against oscillation:
-    //   - cooldown: a slow Lua must not be double-toggled before it reacts;
-    //   - stability: animated levers (Zibo's parking brake handle travels 0→1
-    //     over ~a second) are only toggled when two consecutive checks read the
-    //     SAME local value — never mid-travel, which would reverse the animation
-    //     and bounce the lever between 0.2 and 0.8 forever.
-    if (rd->toggleHandle && drIndex < cache_.size()) {
-        Cache& tc = cache_[drIndex];
-        DrValue after = readDr(*rd);
-        bool stable = after.approxEqual(tc.toggleLastSeen);
-        tc.toggleLastSeen = after;
-        if (tc.toggleCooldown == 0 && stable && exceedsSyncThreshold(after, val)) {
-            tc.toggleCooldown = 90;  // ~1.5 s at 60 fps
-            XPLMCommandOnce(static_cast<XPLMCommandRef>(rd->toggleHandle));
-        }
-    }
-
-    // Nudge-follow for NUMERIC Lua-owned state (e.g. Zibo's stab trim): the write
-    // above gets reverted by the aircraft's logic, so instead step the local value
-    // toward the wire value with the aircraft's own inc/dec commands.  One step per
-    // few frames; while the master keeps trimming we receive writes every tick, so
-    // the follower trails smoothly and settles once the values converge.
-    if ((rd->upHandle || rd->downHandle) && drIndex < cache_.size()
-        && (val.type == DrType::FLOAT || val.type == DrType::DOUBLE)) {
-        Cache& nc = cache_[drIndex];
-        if (nc.toggleCooldown == 0) {
-            DrValue after = readDr(*rd);
-            if (exceedsSyncThreshold(after, val)) {
-                double cur = (val.type == DrType::FLOAT) ? after.f : after.d;
-                double tgt = (val.type == DrType::FLOAT) ? val.f   : val.d;
-                void* h = (cur < tgt) ? rd->upHandle : rd->downHandle;
-                if (h) {
-                    nc.toggleCooldown = 6;  // ~10 steps/s
-                    XPLMCommandOnce(static_cast<XPLMCommandRef>(h));
-                }
-            }
-        }
-    }
 
     if (drIndex < cache_.size()) {
         cache_[drIndex].preApply = std::move(preApply);

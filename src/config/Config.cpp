@@ -153,12 +153,9 @@ bool Config::loadJson(const std::string& path)
 
         for (const auto& jd : j.value("datarefs", json::array())) {
             DatarefEntry d;
-            d.path      = jd.at("path").get<std::string>();
-            d.zoneId    = jd.at("zone").get<std::string>();
-            d.mode      = parseSyncMode(jd.value("mode", "onchange"));
-            d.toggleCmd = jd.value("toggleCommand", "");
-            d.upCmd     = jd.value("upCommand", "");
-            d.downCmd   = jd.value("downCommand", "");
+            d.path   = jd.at("path").get<std::string>();
+            d.zoneId = jd.at("zone").get<std::string>();
+            d.mode   = parseSyncMode(jd.value("mode", "onchange"));
             cfg_.datarefs.push_back(std::move(d));
         }
 

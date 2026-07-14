@@ -46,9 +46,6 @@ void PhysicsSync::reset()
 
     XPLMDataRef joyOvr = XPLMFindDataRef("sim/operation/override/override_joystick");
     if (joyOvr) { int z = 0; XPLMSetDatai(joyOvr, z); }
-
-    XPLMDataRef tbOvr = XPLMFindDataRef("sim/operation/override/override_toe_brakes");
-    if (tbOvr) { int z = 0; XPLMSetDatai(tbOvr, z); }
 }
 
 void PhysicsSync::tick(double dt)
@@ -85,8 +82,6 @@ void PhysicsSync::tick(double dt)
         if (joyOvr) { int v = 1; XPLMSetDatai(joyOvr, v); }
         XPLMDataRef ovPath = XPLMFindDataRef("sim/operation/override/override_planepath");
         if (ovPath) { int v = 1; XPLMSetDatavi(ovPath, &v, 0, 1); }
-        XPLMDataRef tbOvr = XPLMFindDataRef("sim/operation/override/override_toe_brakes");
-        if (tbOvr) { int v = 1; XPLMSetDatai(tbOvr, v); }
     }
     wasPhysicsMaster_ = amMaster;
 
@@ -98,8 +93,6 @@ void PhysicsSync::tick(double dt)
         if (joyOvr) { int z = 0; XPLMSetDatai(joyOvr, z); }
         XPLMDataRef ovPath = XPLMFindDataRef("sim/operation/override/override_planepath");
         if (ovPath) { int z = 0; XPLMSetDatavi(ovPath, &z, 0, 1); }
-        XPLMDataRef tbOvr = XPLMFindDataRef("sim/operation/override/override_toe_brakes");
-        if (tbOvr) { int z = 0; XPLMSetDatai(tbOvr, z); }
 
         sendState();
     } else if (hasState_) {
@@ -129,8 +122,6 @@ void PhysicsSync::tick(double dt)
         if (joyOvr) { int v = 1; XPLMSetDatai(joyOvr, v); }
         XPLMDataRef ovPath = XPLMFindDataRef("sim/operation/override/override_planepath");
         if (ovPath) { int v = 1; XPLMSetDatavi(ovPath, &v, 0, 1); }
-        XPLMDataRef tbOvr = XPLMFindDataRef("sim/operation/override/override_toe_brakes");
-        if (tbOvr) { int v = 1; XPLMSetDatai(tbOvr, v); }
     }
 }
 
@@ -204,15 +195,11 @@ void PhysicsSync::sendState()
     XPLMDataRef gearRef = XPLMFindDataRef("sim/flightmodel2/gear/deploy_ratio");
     if (gearRef) XPLMGetDatavf(gearRef, &s.gear_ratio, 0, 1);
 
-    // Toe brakes.  Deadzone: hardware pedals rarely rest at exactly 0 — a 2–4%
-    // calibration offset on the master would keep the passengers' brakes dragging
-    // for the whole taxi (heated brakes, sagging hydraulics, blend judder).
+    // Toe brakes.
     XPLMDataRef lBrRef = XPLMFindDataRef("sim/cockpit2/controls/left_brake_ratio");
     XPLMDataRef rBrRef = XPLMFindDataRef("sim/cockpit2/controls/right_brake_ratio");
     if (lBrRef) s.left_brake  = XPLMGetDataf(lBrRef);
     if (rBrRef) s.right_brake = XPLMGetDataf(rBrRef);
-    if (s.left_brake  < 0.05f) s.left_brake  = 0.f;
-    if (s.right_brake < 0.05f) s.right_brake = 0.f;
 
     // Engine state: read the REAL flight-model datarefs (not just cockpit indicator copies)
     // so clients can bypass their local (frozen) SASL engine model and show correct RPM.
@@ -430,13 +417,6 @@ void PhysicsSync::applyState(const proto::PhysicsState& s, double dt)
     // Override local joystick so incoming control values from physics master take effect
     XPLMDataRef joyOvr = XPLMFindDataRef("sim/operation/override/override_joystick");
     if (joyOvr) { int v = 1; XPLMSetDatai(joyOvr, v); }
-
-    // Toe brakes have their OWN override — override_joystick does NOT cover the
-    // brake axes.  Without this, the passenger's own pedals (even calibration
-    // noise around zero) keep dragging the brakes under the master's taxi:
-    // heated brakes, sagging brake pressure and position-blend judder.
-    XPLMDataRef tbOvr = XPLMFindDataRef("sim/operation/override/override_toe_brakes");
-    if (tbOvr) { int v = 1; XPLMSetDatai(tbOvr, v); }
 
     wflt("sim/joystick/yoke_roll_ratio",    s.aileron);
     wflt("sim/joystick/yoke_pitch_ratio",   s.elevator);

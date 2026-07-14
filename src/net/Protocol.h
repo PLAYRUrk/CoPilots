@@ -51,9 +51,6 @@ enum class MsgType : uint8_t {
     FMS_FILE           = 0x52,  // any → host → all: one flight-plan file (name + raw bytes)
     PAUSE_STATE        = 0x53,  // any → host → all: sim/time/paused changed (u8: 0/1) —
                                 //   covers keyboard pause AND auto-pause (menus/settings)
-    WEATHER_METAR      = 0x54,  // weather master → host → all: METAR.rwx file chunk
-                                //   (Active Sky / real-weather-from-file crews get the
-                                //   exact same weather source on every machine)
 
     HEARTBEAT          = 0xF0,
     CHAT               = 0xF1,

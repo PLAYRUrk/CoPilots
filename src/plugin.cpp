@@ -82,18 +82,10 @@ struct CoPilotsPlugin {
     int  expectedPaused_ = -1;   // state we just commanded on behalf of the network
     bool pauseConnected_ = false;
 
-    // X-Plane root (from XPLMGetSystemPath, trailing separator included).
-    std::string xpSystemPath_;
-
     void onEnable()
     {
         Log("Plugin enabled");
         cp::net::InitNetwork();
-        {
-            char xpPath[512] = {};
-            XPLMGetSystemPath(xpPath);
-            xpSystemPath_ = xpPath;
-        }
 
         session.onChanged = [this]() { };
 
@@ -233,8 +225,12 @@ struct CoPilotsPlugin {
         // StatusHud quick-open buttons
         statusHud.onToggleConn    = [this]() { connWin.setVisible(!connWin.visible()); };
         statusHud.onToggleNotepad = [this]() { notepadWin.setVisible(!notepadWin.visible()); };
-        weatherSync.init(&session, &netThread, xpSystemPath_);
-        fmsSync.init(&netThread, xpSystemPath_);
+        weatherSync.init(&session, &netThread);
+        {
+            char xpPath[512] = {};
+            XPLMGetSystemPath(xpPath);
+            fmsSync.init(&netThread, xpPath);
+        }
         drPaused_       = XPLMFindDataRef("sim/time/paused");
         cmdPauseToggle_ = XPLMFindCommand("sim/operation/pause_toggle");
 
@@ -838,25 +834,6 @@ struct CoPilotsPlugin {
             break;
         }
 
-        case MT::WEATHER_METAR: {
-            weatherSync.onMetarChunk(r);
-            if (session.isHost()) {
-                cp::net::OutboundMsg relay;
-                relay.target        = 0xFF;
-                relay.excludeTarget = msg.sender;
-                relay.frame.resize(5 + msg.payload.size());
-                relay.frame[0] = msg.type;
-                uint32_t plen = static_cast<uint32_t>(msg.payload.size());
-                relay.frame[1] = plen & 0xFF;
-                relay.frame[2] = (plen>>8) & 0xFF;
-                relay.frame[3] = (plen>>16) & 0xFF;
-                relay.frame[4] = (plen>>24) & 0xFF;
-                std::copy(msg.payload.begin(), msg.payload.end(), relay.frame.begin()+5);
-                netThread.outTcp.push(std::move(relay));
-            }
-            break;
-        }
-
         case MT::WEATHER_STATE: {
             weatherSync.onTcpMessage(msg.payload.data(), msg.payload.size());
             if (session.isHost()) {
@@ -1268,7 +1245,7 @@ struct CoPilotsPlugin {
         syncEngine.init(&registry, &session);
         syncEngine.setSmartCopilotMode(config.get().fromSmartCopilot);
         physicsSync.init(&session, &netThread);
-        weatherSync.init(&session, &netThread, xpSystemPath_);
+        weatherSync.init(&session, &netThread);
 
         session.setIsHost(true);
         cp::ParticipantId myId = session.addParticipant(cfg.nick);
@@ -1313,7 +1290,7 @@ struct CoPilotsPlugin {
         syncEngine.init(&registry, &session);
         syncEngine.setSmartCopilotMode(config.get().fromSmartCopilot);
         physicsSync.init(&session, &netThread);
-        weatherSync.init(&session, &netThread, xpSystemPath_);
+        weatherSync.init(&session, &netThread);
 
         netThread.startClient(cfg.host, cfg.port, cfg.port);
 

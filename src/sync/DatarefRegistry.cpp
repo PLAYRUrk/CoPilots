@@ -78,14 +78,6 @@ void DatarefRegistry::build(const std::vector<DatarefEntry>& drEntries,
             }
             rd.writable = XPLMCanWriteDataRef(rd.handle) != 0;
         }
-        if (!e.toggleCmd.empty()) {
-            rd.toggleHandle = XPLMFindCommand(e.toggleCmd.c_str());
-            if (!rd.toggleHandle)
-                LogWarning("DatarefRegistry: toggle command not found: %s",
-                           e.toggleCmd.c_str());
-        }
-        if (!e.upCmd.empty())   rd.upHandle   = XPLMFindCommand(e.upCmd.c_str());
-        if (!e.downCmd.empty()) rd.downHandle = XPLMFindCommand(e.downCmd.c_str());
         datarefs_.push_back(std::move(rd));
     }
     Log("DatarefRegistry: registered %zu datarefs", datarefs_.size());
