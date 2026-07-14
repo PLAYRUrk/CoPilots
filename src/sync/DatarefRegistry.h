@@ -22,6 +22,9 @@ struct RegisteredDataref {
     bool         writable   = false;
     // ≥0: index into a float/int array dataref (path had [N] suffix); -1: scalar/whole array
     int          arrayIndex = -1;
+    // Optional toggle command fired when a network write gets reverted by the
+    // aircraft's own logic (see DatarefEntry::toggleCmd).
+    void*        toggleHandle = nullptr;
 };
 
 // Command phase on the wire: hold-type controls (fire test switches, stall test

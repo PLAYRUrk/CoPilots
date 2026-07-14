@@ -81,6 +81,10 @@ private:
         // Frames elapsed since this side last made a real local change.
         // Used by the reconciliation path to avoid overwriting recent user input.
         int     framesSinceLocalChange = 9999;
+        // Cooldown between toggle-command firings for Lua-owned state datarefs
+        // (see RegisteredDataref::toggleHandle) so a slow Lua doesn't get
+        // double-toggled before its state settles.
+        int     toggleCooldown = 0;
         bool    cmdPending     = false;
     };
     std::vector<Cache> cache_;

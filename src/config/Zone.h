@@ -33,6 +33,10 @@ struct DatarefEntry {
     std::string path;
     std::string zoneId;
     SyncMode    mode;
+    // Optional: command fired on the RECEIVER when a written value is reverted by
+    // the aircraft's own logic (Lua-owned state like Zibo's parking brake).  The
+    // toggle flips the aircraft's internal state so it converges to the wire value.
+    std::string toggleCmd;
 };
 
 struct CommandEntry {

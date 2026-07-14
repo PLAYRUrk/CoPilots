@@ -204,11 +204,15 @@ void PhysicsSync::sendState()
     XPLMDataRef gearRef = XPLMFindDataRef("sim/flightmodel2/gear/deploy_ratio");
     if (gearRef) XPLMGetDatavf(gearRef, &s.gear_ratio, 0, 1);
 
-    // Toe brakes.
+    // Toe brakes.  Deadzone: hardware pedals rarely rest at exactly 0 — a 2–4%
+    // calibration offset on the master would keep the passengers' brakes dragging
+    // for the whole taxi (heated brakes, sagging hydraulics, blend judder).
     XPLMDataRef lBrRef = XPLMFindDataRef("sim/cockpit2/controls/left_brake_ratio");
     XPLMDataRef rBrRef = XPLMFindDataRef("sim/cockpit2/controls/right_brake_ratio");
     if (lBrRef) s.left_brake  = XPLMGetDataf(lBrRef);
     if (rBrRef) s.right_brake = XPLMGetDataf(rBrRef);
+    if (s.left_brake  < 0.05f) s.left_brake  = 0.f;
+    if (s.right_brake < 0.05f) s.right_brake = 0.f;
 
     // Engine state: read the REAL flight-model datarefs (not just cockpit indicator copies)
     // so clients can bypass their local (frozen) SASL engine model and show correct RPM.

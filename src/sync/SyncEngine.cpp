@@ -428,6 +428,7 @@ void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
 
         // Tick echo-absorption window every frame regardless of whether we send.
         if (c.echoFrames > 0) --c.echoFrames;
+        if (c.toggleCooldown > 0) --c.toggleCooldown;
         ++c.framesSinceLocalChange;
 
         DrValue cur = readDr(rd);
@@ -553,6 +554,20 @@ void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
     DrValue preApply = readDr(*rd);
 
     writeDr(*rd, val);
+
+    // Lua-owned state with a paired toggle command (e.g. Zibo's parking brake):
+    // the write above is reverted by the aircraft's logic — fire the toggle so the
+    // aircraft's INTERNAL state flips to match the wire value.  Cooldown guards
+    // against double-toggling while the Lua state settles.
+    if (rd->toggleHandle && drIndex < cache_.size()
+        && cache_[drIndex].toggleCooldown == 0
+        && exceedsSyncThreshold(preApply, val)) {
+        DrValue after = readDr(*rd);
+        if (exceedsSyncThreshold(after, val)) {
+            cache_[drIndex].toggleCooldown = 60;  // ~1 s at 60 fps
+            XPLMCommandOnce(static_cast<XPLMCommandRef>(rd->toggleHandle));
+        }
+    }
 
     if (drIndex < cache_.size()) {
         cache_[drIndex].preApply = std::move(preApply);
