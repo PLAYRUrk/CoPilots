@@ -390,6 +390,13 @@ void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
         const auto& rd = drs[i];
         if (!rd.handle) continue;
 
+        // SNAPSHOT datarefs exist ONLY for the join-time full resync: they align a
+        // new client's toggle-command-driven switches with the host's positions.
+        // They must never be sent on change detection — at runtime those switches
+        // are moved by relayed commands, and a parallel dataref channel would
+        // re-create the double-channel wars (echo overshoot, Lua write fights).
+        if (rd.mode == SyncMode::SNAPSHOT && !doFull) continue;
+
         // Zone ownership determines whether this participant sends a dataref:
         //
         //   _AUTO zone / SmartCopilot — two sub-cases:

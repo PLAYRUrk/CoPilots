@@ -17,6 +17,7 @@ static SyncMode parseSyncMode(const std::string& s)
     if (s == "continuous")  return SyncMode::CONTINUOUS;
     if (s == "onchange")    return SyncMode::ONCHANGE;
     if (s == "command")     return SyncMode::COMMAND;
+    if (s == "snapshot")    return SyncMode::SNAPSHOT;
     return SyncMode::ONCHANGE;
 }
 
