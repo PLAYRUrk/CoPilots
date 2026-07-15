@@ -915,6 +915,8 @@
     { "path": "sim/flight_controls/rudder_trim_right", "zone": "_SHARED" },
     { "path": "sim/flight_controls/aileron_trim_left", "zone": "_SHARED" },
     { "path": "sim/flight_controls/aileron_trim_right", "zone": "_SHARED" },
+    { "path": "sim/flight_controls/pitch_trim_down", "zone": "_SHARED" },
+    { "path": "sim/flight_controls/pitch_trim_up", "zone": "_SHARED" },
     { "path": "sim/flight_controls/pitch_trim_takeoff", "zone": "_SHARED" },
     { "path": "laminar/B738/flight_controls/fo_pitch_trim_down", "zone": "_SHARED" },
     { "path": "laminar/B738/flight_controls/fo_pitch_trim_up", "zone": "_SHARED" },
