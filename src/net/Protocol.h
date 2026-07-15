@@ -7,7 +7,7 @@
 namespace cp {
 namespace proto {
 
-constexpr uint8_t PROTOCOL_VERSION = 3;
+constexpr uint8_t PROTOCOL_VERSION = 4;  // v4: parkbrake_ratio appended to PhysicsState
 constexpr size_t  TCP_HEADER_SIZE  = 5;
 
 enum class MsgType : uint8_t {
@@ -117,6 +117,14 @@ struct PhysicsState {
     // parameters and trim.  Streaming the master's tank quantities keeps every
     // participant's weight (and everything derived from it) converged.
     float    fuel_kg[9] = {};
+
+    // Parking brake (0=released, 1=set) — sim/flightmodel/controls/parkbrake.
+    // Streamed at UDP rate (~60 Hz) because the aircraft's own Lua rewrites this
+    // dataref from its internal state every frame: a TCP heartbeat pin (~3 Hz)
+    // left windows where the client's stale value won — flapping the value and
+    // blinking brake-related annunciators (ANTI SKID INOP), or leaving clients
+    // stuck braked (hot brakes) when the release never propagated.
+    float    parkbrake_ratio = 0.f;
 };
 static_assert(sizeof(PhysicsState) < 512, "PhysicsState too large for single UDP");
 

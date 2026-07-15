@@ -232,6 +232,12 @@ void PhysicsSync::sendState()
     XPLMDataRef fuelRef = XPLMFindDataRef("sim/flightmodel/weight/m_fuel");
     if (fuelRef) XPLMGetDatavf(fuelRef, s.fuel_kg, 0, 9);
 
+    // Parking brake — see Protocol.h for why this is UDP-rate rather than TCP.
+    {
+        XPLMDataRef pbRef = XPLMFindDataRef("sim/flightmodel/controls/parkbrake");
+        if (pbRef) s.parkbrake_ratio = XPLMGetDataf(pbRef);
+    }
+
     // Rate-limited counterpart of the client-side "fuel pin" diagnostic (~every 10 s):
     // what the master is actually streaming out.  Comparing this line in the host log
     // with the client's "fuel pin recv=" line pinpoints where fuel divergence begins.
@@ -545,6 +551,12 @@ void PhysicsSync::applyState(const proto::PhysicsState& s, double dt)
             }
         }
     }
+
+    // Parking brake: pinned at UDP rate so the aircraft's own Lua (which rewrites
+    // this dataref from its internal state every frame) cannot flap it between
+    // slower TCP heartbeats — the flapping blinked ANTI SKID INOP on clients and
+    // a missed release left non-masters taxiing with brakes set (hot brakes).
+    wflt("sim/flightmodel/controls/parkbrake", s.parkbrake_ratio);
 
     // Derived aerodynamic state: write the master's G-load and AoA so that the client's
     // instruments show values consistent with the master (fixes the ~1g vs ~1.5g divergence
