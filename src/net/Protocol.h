@@ -125,6 +125,14 @@ struct PhysicsState {
     // blinking brake-related annunciators (ANTI SKID INOP), or leaving clients
     // stuck braked (hot brakes) when the release never propagated.
     float    parkbrake_ratio = 0.f;
+
+    // Trim surfaces (sim/cockpit2/controls/*_trim).  The autopilot trims each
+    // sim independently at frame rate; the ~3 Hz TCP heartbeat pin loses almost
+    // every frame to the local AP's writes, so trim values drift far apart over
+    // a long flight.  Streamed at UDP rate for the same reason as parkbrake.
+    float    elevator_trim = 0.f;
+    float    aileron_trim  = 0.f;
+    float    rudder_trim   = 0.f;
 };
 static_assert(sizeof(PhysicsState) < 512, "PhysicsState too large for single UDP");
 

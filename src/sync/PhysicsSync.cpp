@@ -238,6 +238,16 @@ void PhysicsSync::sendState()
         if (pbRef) s.parkbrake_ratio = XPLMGetDataf(pbRef);
     }
 
+    // Trim surfaces — the local AP trims every frame, so these must be streamed
+    // at UDP rate (see Protocol.h).
+    s.elevator_trim = 0.f; s.aileron_trim = 0.f; s.rudder_trim = 0.f;
+    {
+        XPLMDataRef tr;
+        if ((tr = XPLMFindDataRef("sim/cockpit2/controls/elevator_trim"))) s.elevator_trim = XPLMGetDataf(tr);
+        if ((tr = XPLMFindDataRef("sim/cockpit2/controls/aileron_trim")))  s.aileron_trim  = XPLMGetDataf(tr);
+        if ((tr = XPLMFindDataRef("sim/cockpit2/controls/rudder_trim")))   s.rudder_trim   = XPLMGetDataf(tr);
+    }
+
     // Rate-limited counterpart of the client-side "fuel pin" diagnostic (~every 10 s):
     // what the master is actually streaming out.  Comparing this line in the host log
     // with the client's "fuel pin recv=" line pinpoints where fuel divergence begins.
@@ -557,6 +567,12 @@ void PhysicsSync::applyState(const proto::PhysicsState& s, double dt)
     // slower TCP heartbeats — the flapping blinked ANTI SKID INOP on clients and
     // a missed release left non-masters taxiing with brakes set (hot brakes).
     wflt("sim/flightmodel/controls/parkbrake", s.parkbrake_ratio);
+
+    // Trim surfaces: pinned at UDP rate so the client's own autopilot cannot
+    // walk them away from the master's values over a long flight.
+    wflt("sim/cockpit2/controls/elevator_trim", s.elevator_trim);
+    wflt("sim/cockpit2/controls/aileron_trim",  s.aileron_trim);
+    wflt("sim/cockpit2/controls/rudder_trim",   s.rudder_trim);
 
     // Derived aerodynamic state: write the master's G-load and AoA so that the client's
     // instruments show values consistent with the master (fixes the ~1g vs ~1.5g divergence
