@@ -448,6 +448,9 @@ struct CoPilotsPlugin {
         broadcastAuthorityMap();
         connIdMap_[connId] = pid;
         syncEngine.requestFullSync();
+        // Send the host's flight-plan inventory directly to the new client —
+        // the session-start broadcast happened before this client connected.
+        fmsSync.announce(connId);
         Log("CoPilots: accepted join from '%s' as participant %u", nick.c_str(), pid);
     }
 
@@ -605,6 +608,11 @@ struct CoPilotsPlugin {
             // Skip if we already know this participant (received in WELCOME)
             if (!session.find(pid))
                 session.addParticipant(nick);
+            // Re-broadcast our flight-plan inventory so the new joiner learns
+            // about plans announced before it connected (host relays to all;
+            // receivers request only what they are missing, so this is cheap).
+            if (pid != session.myId())
+                fmsSync.announce();
             break;
         }
 
@@ -715,14 +723,31 @@ struct CoPilotsPlugin {
             break;
         }
 
-        case MT::FMS_LIST:
-        case MT::FMS_REQUEST:
-        case MT::FMS_FILE: {
-            switch (static_cast<MT>(msg.type)) {
-                case MT::FMS_LIST:    fmsSync.onList(r);    break;
-                case MT::FMS_REQUEST: fmsSync.onRequest(r); break;
-                default:              fmsSync.onFile(r);    break;
+        case MT::FMS_REQUEST: {
+            // The host serves requested files itself and relays only the names
+            // it could not serve; otherwise every participant holding a file
+            // would broadcast its own copy (N duplicate transfers).
+            std::vector<std::string> unserved;
+            fmsSync.onRequest(r, session.isHost() ? &unserved : nullptr);
+            if (session.isHost() && !unserved.empty()) {
+                auto b = cp::proto::MsgBuilder(MT::FMS_REQUEST)
+                             .u16(static_cast<uint16_t>(unserved.size()));
+                for (const auto& n : unserved) b.str(n);
+                cp::net::OutboundMsg relay;
+                relay.target        = 0xFF;
+                relay.excludeTarget = msg.sender;  // don't echo back to the originator
+                relay.frame         = b.build();
+                netThread.outTcp.push(std::move(relay));
             }
+            break;
+        }
+
+        case MT::FMS_LIST:
+        case MT::FMS_FILE: {
+            if (static_cast<MT>(msg.type) == MT::FMS_LIST)
+                fmsSync.onList(r);
+            else
+                fmsSync.onFile(r);
             if (session.isHost()) {
                 cp::net::OutboundMsg relay;
                 relay.target        = 0xFF;

@@ -168,7 +168,10 @@ void PhysicsSync::sendState()
 
     // Thrust reverser deployment (0=stowed, 1=fully deployed).
     // Without this, clients see throttle=1 as full FORWARD power when reverser is at max.
-    XPLMDataRef revRef = XPLMFindDataRef("sim/cockpit2/engine/actuators/thrust_reverser_deploy_ratio");
+    // NOTE: this lives in sim/flightmodel2 (read-only actual door state); the old
+    // sim/cockpit2/engine/actuators path does not exist in X-Plane 11, which left
+    // reverser_ratio permanently zero and reverse invisible to clients.
+    XPLMDataRef revRef = XPLMFindDataRef("sim/flightmodel2/engines/thrust_reverser_deploy_ratio");
     if (revRef) XPLMGetDatavf(revRef, s.reverser_ratio, 0, 8);
 
     // Prop pitch ratio (turboprops/pistons).
@@ -449,8 +452,20 @@ void PhysicsSync::applyState(const proto::PhysicsState& s, double dt)
         if (thrRef) XPLMSetDatavf(thrRef, const_cast<float*>(s.throttle), 0, 8);
     }
     {
-        XPLMDataRef revRef = XPLMFindDataRef("sim/cockpit2/engine/actuators/thrust_reverser_deploy_ratio");
-        if (revRef) XPLMSetDatavf(revRef, const_cast<float*>(s.reverser_ratio), 0, 8);
+        // Thrust reverser.  The true door state (sim/flightmodel2/engines/
+        // thrust_reverser_deploy_ratio) is read-only, so reverse is engaged on
+        // the client through the signed jet throttle handle instead: -1..0 is
+        // reverse, 0..1 is forward.  The local engine model then deploys its
+        // own reverser doors, and the aircraft's animation/sound follow.
+        // While the master's doors are deployed, s.throttle carries the
+        // reverse-thrust amount (throttle_ratio semantics during reverse).
+        XPLMDataRef jetRevRef = XPLMFindDataRef("sim/cockpit2/engine/actuators/throttle_jet_rev_ratio");
+        if (jetRevRef) {
+            float jr[8];
+            for (int i = 0; i < 8; ++i)
+                jr[i] = (s.reverser_ratio[i] > 0.05f) ? -s.throttle[i] : s.throttle[i];
+            XPLMSetDatavf(jetRevRef, jr, 0, 8);
+        }
     }
     {
         XPLMDataRef propRef = XPLMFindDataRef("sim/cockpit2/engine/actuators/prop_ratio");
