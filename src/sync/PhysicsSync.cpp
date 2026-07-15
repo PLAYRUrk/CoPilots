@@ -232,6 +232,18 @@ void PhysicsSync::sendState()
     XPLMDataRef fuelRef = XPLMFindDataRef("sim/flightmodel/weight/m_fuel");
     if (fuelRef) XPLMGetDatavf(fuelRef, s.fuel_kg, 0, 9);
 
+    // Rate-limited counterpart of the client-side "fuel pin" diagnostic (~every 10 s):
+    // what the master is actually streaming out.  Comparing this line in the host log
+    // with the client's "fuel pin recv=" line pinpoints where fuel divergence begins.
+    {
+        static int fuelSendLog = 0;
+        if (++fuelSendLog % 600 == 1) {
+            float total = 0.f;
+            for (int k = 0; k < 9; ++k) total += s.fuel_kg[k];
+            Log("PhysicsSync: fuel send total=%.0f kg (seq=%u)", total, seq_);
+        }
+    }
+
     // Derived aerodynamic state: read here so clients' instruments (AUASP, AoA indicator,
     // accelerometer/перегрузкомер) display values consistent with the master rather than
     // values derived from their own locally-computed kinematics.
@@ -514,7 +526,24 @@ void PhysicsSync::applyState(const proto::PhysicsState& s, double dt)
     // from it — trim, engine parameters, performance) stays converged across the crew.
     {
         XPLMDataRef fuelRef = XPLMFindDataRef("sim/flightmodel/weight/m_fuel");
-        if (fuelRef) XPLMSetDatavf(fuelRef, const_cast<float*>(s.fuel_kg), 0, 9);
+        if (fuelRef) {
+            XPLMSetDatavf(fuelRef, const_cast<float*>(s.fuel_kg), 0, 9);
+
+            // Rate-limited pin diagnostic (~every 10 s at 60 fps): received total vs
+            // post-write readback total.  Distinguishes the three fuel-divergence
+            // failure modes: no lines at all = no UDP state applied; recv != master's
+            // gauge = wrong sender; readback != recv = the write is rejected or the
+            // aircraft's Lua rewrites the tanks after us.
+            static int fuelLog = 0;
+            if (++fuelLog % 600 == 1) {
+                float rb[9] = {};
+                XPLMGetDatavf(fuelRef, rb, 0, 9);
+                float recv = 0.f, got = 0.f;
+                for (int k = 0; k < 9; ++k) { recv += s.fuel_kg[k]; got += rb[k]; }
+                Log("PhysicsSync: fuel pin recv=%.0f kg readback=%.0f kg (sender=%u seq=%u)",
+                    recv, got, s.sender_id, s.seq);
+            }
+        }
     }
 
     // Derived aerodynamic state: write the master's G-load and AoA so that the client's
