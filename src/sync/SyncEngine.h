@@ -95,6 +95,20 @@ private:
     // a matching End yet).  Released in reset() so a disconnect mid-hold does not
     // leave a command stuck down forever.
     std::vector<bool>    heldByNet_;
+    // Frames since the last Begin (or Begin-refresh keepalive) arrived for a
+    // net-held command.  If no keepalive arrives within NET_HOLD_TIMEOUT_FRAMES the
+    // hold is force-released: a lost/eaten End edge (e.g. Begin/End pairs corrupted
+    // by aircraft Lua cross-firing a sibling command) then self-heals in ~2 s
+    // instead of leaving a trim/test switch running forever.
+    std::vector<int>     netHoldFrames_;
+    // Commands currently held down BY THE LOCAL USER (a non-suppressed Begin edge
+    // was seen without its End yet).  While held, a Begin keepalive is re-sent
+    // every HOLD_REFRESH_FRAMES so receivers keep the hold alive past the timeout.
+    std::vector<bool>    userHeld_;
+
+    // Held-command keepalive tuning (frames at ~60 fps).
+    static constexpr int HOLD_REFRESH_FRAMES    = 30;   // re-send Begin every ~0.5 s
+    static constexpr int NET_HOLD_TIMEOUT_FRAMES = 120; // force-release after ~2 s
 
     DrValue readDr(const RegisteredDataref& rd) const;
     void    writeDr(const RegisteredDataref& rd, const DrValue& val);

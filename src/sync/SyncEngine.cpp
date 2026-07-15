@@ -235,6 +235,8 @@ void SyncEngine::reset()
     suppressBegin_.clear();
     suppressEnd_.clear();
     heldByNet_.clear();
+    netHoldFrames_.clear();
+    userHeld_.clear();
 
     if (!reg_) { cache_.clear(); return; }
     Log("SyncEngine::reset: priming cache for %zu datarefs", reg_->datarefs().size());
@@ -497,6 +499,33 @@ void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
         Log("SyncEngine::tick own=%d sent=%d/%zu full=%d",
             ownCount, sentCount, drs.size(), (int)doFull);
 
+    // Held-command keepalive / self-healing:
+    //  - while the local user holds a command, re-send Begin every
+    //    HOLD_REFRESH_FRAMES (staggered by index); receivers treat a Begin for an
+    //    already-active hold as a pure timeout refresh (no nested XPLMCommandBegin);
+    //  - force-release net-holds whose keepalives stopped arriving.  A lost or
+    //    eaten End edge (aircraft Lua cross-firing sibling commands corrupts
+    //    Begin/End pairing) then self-heals in ~2 s instead of leaving the
+    //    remote trim/test switch running forever.
+    for (size_t i = 0; i < userHeld_.size(); ++i) {
+        if (userHeld_[i] && ((tickCounter_ + i) % HOLD_REFRESH_FRAMES) == 0)
+            cmdEvents_.emplace_back(static_cast<uint16_t>(i), CMD_PHASE_BEGIN);
+    }
+    for (size_t i = 0; i < heldByNet_.size(); ++i) {
+        if (!heldByNet_[i]) continue;
+        if (i < netHoldFrames_.size() && ++netHoldFrames_[i] > NET_HOLD_TIMEOUT_FRAMES) {
+            const RegisteredCommand* rc = reg_->getCmd(static_cast<uint16_t>(i));
+            if (rc && rc->handle) {
+                if (suppressEnd_.size() <= i) suppressEnd_.resize(i + 1, 0);
+                ++suppressEnd_[i];
+                XPLMCommandEnd(static_cast<XPLMCommandRef>(rc->handle));
+            }
+            heldByNet_[i] = false;
+            Log("SyncEngine: net-held command '%s' timed out — force-released",
+                (rc ? rc->path.c_str() : "?"));
+        }
+    }
+
     // Flush queued local command edges in the order they were fired so a quick
     // click (Begin immediately followed by End) arrives in the right order.
     for (const auto& ev : cmdEvents_)
@@ -609,18 +638,34 @@ void SyncEngine::applyIncomingCommand(uint16_t cmdIndex, uint8_t phase,
     // Suppress the echo: XPLMCommandBegin/End/Once trigger our registered handler
     // synchronously with the corresponding phase(s); those self-echoes must not be
     // re-queued for re-sending.
-    if (suppressBegin_.size() <= cmdIndex) suppressBegin_.resize(cmdIndex + 1, 0);
-    if (suppressEnd_.size()   <= cmdIndex) suppressEnd_.resize(cmdIndex + 1, 0);
-    if (heldByNet_.size()     <= cmdIndex) heldByNet_.resize(cmdIndex + 1, false);
+    if (suppressBegin_.size()  <= cmdIndex) suppressBegin_.resize(cmdIndex + 1, 0);
+    if (suppressEnd_.size()    <= cmdIndex) suppressEnd_.resize(cmdIndex + 1, 0);
+    if (heldByNet_.size()      <= cmdIndex) heldByNet_.resize(cmdIndex + 1, false);
+    if (netHoldFrames_.size()  <= cmdIndex) netHoldFrames_.resize(cmdIndex + 1, 0);
 
     XPLMCommandRef h = static_cast<XPLMCommandRef>(rc->handle);
     switch (phase) {
         case CMD_PHASE_BEGIN:
+            // Keepalive refresh of an already-active hold: just reset the timeout.
+            // Calling XPLMCommandBegin again would nest the hold inside X-Plane
+            // WITHOUT firing a new Begin edge, leaving suppressBegin_ stale — the
+            // stale counter would later eat a REAL local Begin and desync the pair
+            // bookkeeping (the trim-runaway bug).
+            if (heldByNet_[cmdIndex]) {
+                netHoldFrames_[cmdIndex] = 0;
+                break;
+            }
             ++suppressBegin_[cmdIndex];
-            heldByNet_[cmdIndex] = true;
+            heldByNet_[cmdIndex]     = true;
+            netHoldFrames_[cmdIndex] = 0;
             XPLMCommandBegin(h);
             break;
         case CMD_PHASE_END:
+            // Duplicate/crossed End for a hold we are not maintaining: ignore it.
+            // XPLMCommandEnd on an inactive command fires no End edge, so the
+            // pre-incremented suppressEnd_ would go stale and eat the next REAL
+            // local End — the release would never be relayed (trim runaway).
+            if (!heldByNet_[cmdIndex]) break;
             ++suppressEnd_[cmdIndex];
             heldByNet_[cmdIndex] = false;
             XPLMCommandEnd(h);
@@ -646,6 +691,14 @@ void SyncEngine::notifyCommandFired(uint16_t cmdIndex, uint8_t phase)
             return;
         }
     }
+
+    // Track genuine local holds so tick() can re-send Begin keepalives; receivers
+    // force-release a net-hold that stops receiving keepalives (self-healing for
+    // corrupted Begin/End pairing).
+    if (userHeld_.size() <= cmdIndex) userHeld_.resize(cmdIndex + 1, false);
+    if (phase == CMD_PHASE_BEGIN)     userHeld_[cmdIndex] = true;
+    else if (phase == CMD_PHASE_END)  userHeld_[cmdIndex] = false;
+
     cmdEvents_.emplace_back(cmdIndex, phase);
 }
 
