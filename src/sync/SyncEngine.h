@@ -82,6 +82,12 @@ private:
         // Used by the reconciliation path to avoid overwriting recent user input.
         int     framesSinceLocalChange = 9999;
         bool    cmdPending     = false;
+        // SNAPSHOT reconciliation: last observed local value and how long it has
+        // been unchanged.  Both sender (host) and receivers track this so the
+        // periodic re-sync only touches switches nobody is currently moving —
+        // an in-flight relayed command or a user's hand resets the counter.
+        DrValue lastSeen;
+        int     stableFrames = 0;
     };
     std::vector<Cache> cache_;
     // Ordered queue of locally fired command edges (index, phase) awaiting send.
@@ -109,6 +115,13 @@ private:
     // Held-command keepalive tuning (frames at ~60 fps).
     static constexpr int HOLD_REFRESH_FRAMES    = 30;   // re-send Begin every ~0.5 s
     static constexpr int NET_HOLD_TIMEOUT_FRAMES = 120; // force-release after ~2 s
+
+    // SNAPSHOT reconciliation (frames at ~60 fps): the host re-broadcasts each
+    // snapshot dataref every RECONCILE period (staggered by index), but only when
+    // its own value has been stable for STABLE frames; receivers likewise apply
+    // only onto a locally-stable, differing value.
+    static constexpr int SNAPSHOT_STABLE_FRAMES    = 120;  // ~2 s of no movement
+    static constexpr int SNAPSHOT_RECONCILE_FRAMES = 600;  // ~10 s between re-sends
 
     DrValue readDr(const RegisteredDataref& rd) const;
     void    writeDr(const RegisteredDataref& rd, const DrValue& val);

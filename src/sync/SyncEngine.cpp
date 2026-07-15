@@ -243,8 +243,14 @@ void SyncEngine::reset()
     cache_.resize(reg_->datarefs().size());
     for (size_t i = 0; i < reg_->datarefs().size(); ++i) {
         const auto& rd = reg_->datarefs()[i];
-        if (rd.handle)
+        if (rd.handle) {
             cache_[i].value = readDr(rd);
+            // Treat the just-primed value as already stable: the join-time
+            // snapshot full-sync arrives within the first seconds of a session,
+            // and the receiver-side stability guard must not reject it.
+            cache_[i].lastSeen     = cache_[i].value;
+            cache_[i].stableFrames = SNAPSHOT_STABLE_FRAMES;
+        }
     }
     Log("SyncEngine::reset: cache primed");
 }
@@ -390,12 +396,33 @@ void SyncEngine::tick(DrChangedCb onChanged, CmdFiredCb onCmd)
         const auto& rd = drs[i];
         if (!rd.handle) continue;
 
-        // SNAPSHOT datarefs exist ONLY for the join-time full resync: they align a
-        // new client's toggle-command-driven switches with the host's positions.
-        // They must never be sent on change detection — at runtime those switches
-        // are moved by relayed commands, and a parallel dataref channel would
-        // re-create the double-channel wars (echo overshoot, Lua write fights).
-        if (rd.mode == SyncMode::SNAPSHOT && !doFull) continue;
+        // SNAPSHOT datarefs align toggle-command-driven switches with the host:
+        // sent on the join-time full resync AND re-broadcast by the host every
+        // SNAPSHOT_RECONCILE_FRAMES — but only while the host's own value has been
+        // stable for SNAPSHOT_STABLE_FRAMES, so a switch mid-movement (relayed
+        // command still settling, user's hand on it) is never sampled.  They are
+        // never sent on change detection — at runtime these switches are moved by
+        // relayed commands, and a parallel dataref channel would re-create the
+        // double-channel wars (echo overshoot, Lua write fights).
+        if (rd.mode == SyncMode::SNAPSHOT) {
+            Cache& sc = cache_[i];
+            DrValue cur = readDr(rd);
+            if (cur.approxEqual(sc.lastSeen)) {
+                if (sc.stableFrames < 1000000) ++sc.stableFrames;
+            } else {
+                sc.lastSeen     = cur;
+                sc.stableFrames = 0;
+            }
+            bool reconcile = session_->isHost()
+                             && sc.stableFrames >= SNAPSHOT_STABLE_FRAMES
+                             && ((tickCounter_ + i) % SNAPSHOT_RECONCILE_FRAMES) == 0;
+            if (doFull || reconcile) {
+                sc.value = cur;
+                onChanged(static_cast<uint16_t>(i), cur);
+                ++sentCount;
+            }
+            continue;
+        }
 
         // Zone ownership determines whether this participant sends a dataref:
         //
@@ -583,6 +610,27 @@ void SyncEngine::applyIncoming(uint16_t drIndex, const DrValue& val,
             if (auth != senderParticipantId && auth != INVALID_PARTICIPANT_ID) return;
             if (senderParticipantId == session_->myId()) return;
         }
+    }
+
+    // SNAPSHOT reconciliation, receiver side: apply the host's value only when it
+    // actually differs AND our local value has been stable long enough that nobody
+    // here is currently moving this switch (a relayed command still settling, or a
+    // user's hand on it, resets the stability counter in tick()).  This prevents
+    // the periodic re-sync from being mistaken for — or fighting with — a
+    // legitimately in-flight action.
+    if (rd->mode == SyncMode::SNAPSHOT) {
+        if (drIndex >= cache_.size()) return;
+        Cache& sc = cache_[drIndex];
+        DrValue cur = readDr(*rd);
+        if (cur.approxEqual(val)) {           // already in sync — nothing to do
+            sc.lastSeen = cur;
+            return;
+        }
+        if (sc.stableFrames < SNAPSHOT_STABLE_FRAMES) return;  // being moved — skip
+        writeDr(*rd, val);
+        sc.value    = val;
+        sc.lastSeen = val;
+        return;
     }
 
     // Remember the pre-write value so tick() can recognise a revert (aircraft's own

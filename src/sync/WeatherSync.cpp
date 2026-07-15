@@ -56,6 +56,40 @@ static void wdrvia(const char* path, const int* v, int count)
     if (dr && XPLMCanWriteDataRef(dr)) XPLMSetDatavi(dr, const_cast<int*>(v), 0, count);
 }
 
+// XP11 legacy weather layers are NOT arrays: each layer is a separate scalar
+// dataref whose registered name literally contains the index, e.g.
+// "sim/weather/wind_speed_kt[0]".  Resolving the bare name either fails
+// (clouds, turbulence, wind altitude) or resolves to a DIFFERENT read-only
+// dataref (the "effective wind at the aircraft" scalars) — which is why the
+// original array-based implementation silently synced nothing.
+static float rdrfIdx(const char* base, int i)
+{
+    char buf[128];
+    snprintf(buf, sizeof(buf), "%s[%d]", base, i);
+    return rdrf(buf);
+}
+
+static int rdriIdx(const char* base, int i)
+{
+    char buf[128];
+    snprintf(buf, sizeof(buf), "%s[%d]", base, i);
+    return rdri(buf);
+}
+
+static void wdrfIdx(const char* base, int i, float v)
+{
+    char buf[128];
+    snprintf(buf, sizeof(buf), "%s[%d]", base, i);
+    wdrf(buf, v);
+}
+
+static void wdriIdx(const char* base, int i, int v)
+{
+    char buf[128];
+    snprintf(buf, sizeof(buf), "%s[%d]", base, i);
+    wdri(buf, v);
+}
+
 void WeatherSync::init(Session* session, net::NetThread* net, const std::string& xpSystemPath)
 {
     session_   = session;
@@ -333,18 +367,24 @@ void WeatherSync::sendStateLegacy()
     float cloud_base[3], cloud_tops[3];
     int   cloud_type[3];
 
-    rdrfa("sim/weather/wind_speed_kt",        wind_speed,  3);
-    rdrfa("sim/weather/wind_direction_degt",   wind_dir,    3);
-    rdrfa("sim/weather/wind_altitude_msl_m",   wind_alt,    3);
-    rdrfa("sim/weather/turbulence",            turbulence,  3);
-    rdrvia("sim/weather/cloud_type",           cloud_type,  3);
-    rdrfa("sim/weather/cloud_base_msl_m",      cloud_base,  3);
-    rdrfa("sim/weather/cloud_tops_msl_m",      cloud_tops,  3);
+    for (int i = 0; i < 3; ++i) {
+        wind_speed[i] = rdrfIdx("sim/weather/wind_speed_kt",       i);
+        wind_dir[i]   = rdrfIdx("sim/weather/wind_direction_degt",  i);
+        wind_alt[i]   = rdrfIdx("sim/weather/wind_altitude_msl_m",  i);
+        turbulence[i] = rdrfIdx("sim/weather/turbulence",           i);
+        cloud_type[i] = rdriIdx("sim/weather/cloud_type",           i);
+        cloud_base[i] = rdrfIdx("sim/weather/cloud_base_msl_m",     i);
+        cloud_tops[i] = rdrfIdx("sim/weather/cloud_tops_msl_m",     i);
+    }
 
-    float visibility  = rdrf("sim/weather/visibility_reported_sm");
+    // NOTE: the wire field carries METERS ("visibility_reported_sm" does not
+    // exist in XP11 — the real dataref is visibility_reported_m).  The dew point
+    // dataref name really is "dewpoi_sealevel_c" (an X-Plane typo kept for
+    // compatibility); "dewpoint_sealevel_c" resolves to nothing.
+    float visibility  = rdrf("sim/weather/visibility_reported_m");
     float rain        = rdrf("sim/weather/rain_percent");
     float temperature = rdrf("sim/weather/temperature_sealevel_c");
-    float dewpoint    = rdrf("sim/weather/dewpoint_sealevel_c");
+    float dewpoint    = rdrf("sim/weather/dewpoi_sealevel_c");
     float barometer   = rdrf("sim/weather/barometer_sealevel_inhg");
     float zulu_sec    = rdrf("sim/time/zulu_time_sec");
     int   date_days   = rdri("sim/time/local_date_days");
@@ -406,17 +446,19 @@ void WeatherSync::applyStateLegacy(proto::MsgReader& r)
 
     if (!r.ok()) return;
 
-    wdrfa("sim/weather/wind_speed_kt",       wind_speed, 3);
-    wdrfa("sim/weather/wind_direction_degt",  wind_dir,   3);
-    wdrfa("sim/weather/wind_altitude_msl_m",  wind_alt,   3);
-    wdrfa("sim/weather/turbulence",           turbulence, 3);
-    wdrvia("sim/weather/cloud_type",          cloud_type, 3);
-    wdrfa("sim/weather/cloud_base_msl_m",     cloud_base, 3);
-    wdrfa("sim/weather/cloud_tops_msl_m",     cloud_tops, 3);
-    wdrf("sim/weather/visibility_reported_sm", visibility);
+    for (int i = 0; i < 3; ++i) {
+        wdrfIdx("sim/weather/wind_speed_kt",       i, wind_speed[i]);
+        wdrfIdx("sim/weather/wind_direction_degt",  i, wind_dir[i]);
+        wdrfIdx("sim/weather/wind_altitude_msl_m",  i, wind_alt[i]);
+        wdrfIdx("sim/weather/turbulence",           i, turbulence[i]);
+        wdriIdx("sim/weather/cloud_type",           i, cloud_type[i]);
+        wdrfIdx("sim/weather/cloud_base_msl_m",     i, cloud_base[i]);
+        wdrfIdx("sim/weather/cloud_tops_msl_m",     i, cloud_tops[i]);
+    }
+    wdrf("sim/weather/visibility_reported_m",  visibility);  // meters, see sender
     wdrf("sim/weather/rain_percent",           rain);
     wdrf("sim/weather/temperature_sealevel_c", temperature);
-    wdrf("sim/weather/dewpoint_sealevel_c",    dewpoint);
+    wdrf("sim/weather/dewpoi_sealevel_c",      dewpoint);    // XP typo name
     wdrf("sim/weather/barometer_sealevel_inhg",barometer);
     wdrf("sim/time/zulu_time_sec",             zulu_sec);
     wdri("sim/time/local_date_days",           date_days);
