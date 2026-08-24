@@ -65,13 +65,18 @@ void XPImguiWindow::xpwShutdown()
         hasKbFocus_ = false;
     }
     if (imCtx_) {
-        ImGui::SetCurrentContext(imCtx_);
+        // Same care as xpwSetVisible: leave whoever called us on the context
+        // they were using, unless it is the one being destroyed here.
+        ImGuiContext* mine = imCtx_;
+        ImGuiContext* prev = ImGui::GetCurrentContext();
+        ImGui::SetCurrentContext(mine);
         if (glReady_) {
             ImGui_ImplOpenGL3_Shutdown();
             glReady_ = false;
         }
-        ImGui::DestroyContext(imCtx_);
+        ImGui::DestroyContext(mine);
         imCtx_ = nullptr;
+        ImGui::SetCurrentContext(prev == mine ? nullptr : prev);
     }
     if (xpWin_) {
         XPLMDestroyWindow(xpWin_);
@@ -90,10 +95,17 @@ void XPImguiWindow::xpwSetVisible(bool v)
         if (xpWin_ && XPLMHasKeyboardFocus(xpWin_)) XPLMTakeKeyboardFocus(0);
         hasKbFocus_ = false;
         if (imCtx_) {
+            // Callable from anywhere - including from inside ANOTHER window's
+            // ImGui frame, which is exactly what the HUD's toggle buttons do.
+            // Switching the current context out from under that frame and
+            // leaving it switched made the caller's next ImGui call run with no
+            // current window, and SameLine() then dereferenced null.
+            ImGuiContext* prev = ImGui::GetCurrentContext();
             ImGui::SetCurrentContext(imCtx_);
             ImGuiIO& io = ImGui::GetIO();
             io.AddMouseButtonEvent(0, false);
             io.AddMouseButtonEvent(1, false);
+            ImGui::SetCurrentContext(prev);
         }
         isDragging_ = false;
     }
