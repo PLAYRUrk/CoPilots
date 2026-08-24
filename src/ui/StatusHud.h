@@ -24,6 +24,7 @@ public:
     // Callbacks wired by the plugin to toggle other windows.
     std::function<void()> onToggleConn;
     std::function<void()> onToggleNotepad;
+    std::function<void()> onToggleCharts;
 
 protected:
     void renderContent() override;

@@ -36,21 +36,45 @@ if(NOT EXISTS "${NLOHMANN_JSON_INCLUDE_DIR}/nlohmann/json.hpp")
     )
 endif()
 
+# stb_image single-header (chart image decoding), pinned to a release tag.
+set(STB_INCLUDE_DIR "${CMAKE_BINARY_DIR}/stb_include")
+file(MAKE_DIRECTORY "${STB_INCLUDE_DIR}/stb")
+if(NOT EXISTS "${STB_INCLUDE_DIR}/stb/stb_image.h")
+    message(STATUS "Downloading stb_image.h...")
+    file(DOWNLOAD
+        "https://raw.githubusercontent.com/nothings/stb/master/stb_image.h"
+        "${STB_INCLUDE_DIR}/stb/stb_image.h"
+        SHOW_PROGRESS
+    )
+endif()
+
+# PDFium runtime DLL (sets PDFIUM_DLL; empty when unavailable)
+include(cmake/Pdfium.cmake)
+
 # ── Source files ───────────────────────────────────────────────────────────
 set(COPILOTS_SOURCES
     src/plugin.cpp
     src/Log.cpp
 
     src/config/Config.cpp
+    src/config/Prefs.cpp
     src/config/SmartCopilotCompat.cpp
 
     src/net/Transport.cpp
     src/net/NetThread.cpp
     src/net/ConfigDownloader.cpp
+    src/net/HttpFetch.cpp
+
+    src/chart/ChartCal.cpp
+    src/chart/ChartCalCloud.cpp
+    src/chart/ChartFoxAuth.cpp
+    src/chart/ChartFoxClient.cpp
+    src/chart/ChartRenderer.cpp
 
     src/sync/DatarefRegistry.cpp
     src/sync/SyncEngine.cpp
     src/sync/PhysicsSync.cpp
+    src/sync/PointerSync.cpp
     src/sync/WeatherSync.cpp
     src/sync/AutoDatarefSync.cpp
     src/sync/FmsPlanSync.cpp
@@ -64,6 +88,7 @@ set(COPILOTS_SOURCES
     src/ui/LobbyWindow.cpp
     src/ui/StatusHud.cpp
     src/ui/NotepadWindow.cpp
+    src/ui/ChartsWindow.cpp
 )
 
 # Dear ImGui source files
@@ -87,10 +112,16 @@ target_include_directories(CoPilots PRIVATE
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends
     "${NLOHMANN_JSON_INCLUDE_DIR}"
+    "${STB_INCLUDE_DIR}"
 )
 
 # X-Plane SDK
 target_link_xplane_sdk(CoPilots)
+
+# Legacy 3-D drawing phases (xplm_Phase_Airplanes) are gated behind this define
+# in SDK 3.0.3.  They remain functional in X-Plane 11 under OpenGL, which is
+# what the laser-pointer draw callback targets.
+target_compile_definitions(CoPilots PRIVATE XPLM_DEPRECATED)
 
 # ── Platform-specific settings ─────────────────────────────────────────────
 if(WIN32)
@@ -100,7 +131,7 @@ if(WIN32)
         SUFFIX       ".xpl"
         PREFIX       ""
     )
-    target_link_libraries(CoPilots PRIVATE opengl32 ws2_32 wininet)
+    target_link_libraries(CoPilots PRIVATE opengl32 ws2_32 wininet shell32)
     target_compile_definitions(CoPilots PRIVATE _CRT_SECURE_NO_WARNINGS)
 
     # Ensure we export the required plugin symbols
@@ -142,6 +173,16 @@ add_custom_command(TARGET CoPilots POST_BUILD
         "${CMAKE_BINARY_DIR}/install/CoPilots/64/$<TARGET_FILE_NAME:CoPilots>"
     COMMENT "Staging plugin to build/install/CoPilots/"
 )
+
+# pdfium.dll ships next to win.xpl (loaded at runtime by ChartRenderer).
+if(WIN32 AND PDFIUM_DLL)
+    add_custom_command(TARGET CoPilots POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${PDFIUM_DLL}"
+            "${CMAKE_BINARY_DIR}/install/CoPilots/64/pdfium.dll"
+        COMMENT "Staging pdfium.dll"
+    )
+endif()
 
 message(STATUS "CoPilots build configured.")
 message(STATUS "  After building, copy build/install/CoPilots/ to:")

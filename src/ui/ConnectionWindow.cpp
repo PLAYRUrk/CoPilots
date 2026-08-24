@@ -72,6 +72,36 @@ static bool parseAddr(const char* buf, std::string& outHost, uint16_t& outPort)
     return true;
 }
 
+void ConnectionWindow::setConnectDefaults(const std::string& nick, const std::string& address,
+                                          uint16_t hostPort, const std::string& password,
+                                          const std::string& bindIp,
+                                          bool requireJoinApproval, bool requireControlApproval)
+{
+    snprintf(nickBuf_, sizeof(nickBuf_), "%s", nick.c_str());
+    snprintf(addrBuf_, sizeof(addrBuf_), "%s", address.c_str());
+    snprintf(portBuf_, sizeof(portBuf_), "%u", hostPort);
+    snprintf(passBuf_, sizeof(passBuf_), "%s", password.c_str());
+
+    connCfg_.nick     = nick;
+    connCfg_.password = password;
+    connCfg_.bindIp   = bindIp;
+    connCfg_.requireJoinApproval    = requireJoinApproval;
+    connCfg_.requireControlApproval = requireControlApproval;
+    // Prefill host/port from the join address; the Join button re-parses the
+    // buffer on click, and the Host tab reads connCfg_.port (kept = hostPort:
+    // both tabs share connCfg_.port, and hosting without touching the port
+    // field must use the persisted host port, not the join port).
+    {
+        std::string h; uint16_t p = 0;
+        if (parseAddr(addrBuf_, h, p)) connCfg_.host = h;
+    }
+    connCfg_.port = hostPort;
+
+    // The interface combo is populated lazily on first render — remember the
+    // desired bind IP and resolve the selection index there.
+    pendingBindIp_ = bindIp;
+}
+
 void ConnectionWindow::renderContent()
 {
     // Enforce a minimum window width so the widest fill-width button never clips
@@ -108,7 +138,22 @@ void ConnectionWindow::renderContent()
         break;
     }
 
+    renderSettingsSection();
+
     xpwEndWindow();
+}
+
+void ConnectionWindow::renderSettingsSection()
+{
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextDisabled("Settings");
+    if (ImGui::Checkbox("Enable laser pointer", &pointerEnabled_))
+        if (onPointerEnabledChanged) onPointerEnabledChanged(pointerEnabled_);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Hold the CoPilots/pointer_hold command (bind it to a key or\n"
+                          "joystick button) to aim a shared laser pointer in the cockpit.\n"
+                          "Off by default; others' pointers are always visible.");
 }
 
 static void renderDrHashLine(const AircraftConfig* cfg)
@@ -148,6 +193,19 @@ void ConnectionWindow::renderConnectForm()
             if (!bindIpsLoaded_) {
                 bindIps_ = cp::net::ListLocalIPv4();
                 bindIpsLoaded_ = true;
+                // Resolve a bind IP restored from prefs to a combo index; if the
+                // interface no longer exists, fall back to Auto.
+                if (!pendingBindIp_.empty()) {
+                    connCfg_.bindIp.clear();
+                    for (int i = 0; i < (int)bindIps_.size(); ++i) {
+                        if (bindIps_[i] == pendingBindIp_) {
+                            bindIpSel_ = i + 1;
+                            connCfg_.bindIp = pendingBindIp_;
+                            break;
+                        }
+                    }
+                    pendingBindIp_.clear();
+                }
             }
             {
                 const char* preview = (bindIpSel_ == 0 ||

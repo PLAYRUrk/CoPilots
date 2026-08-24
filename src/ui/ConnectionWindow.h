@@ -53,6 +53,10 @@ public:
     std::function<void()>                                  onRequestControl;
     std::function<void(ParticipantId)>                     onGrantControl;
     std::function<void(ParticipantId)>                     onDenyControl;
+    // Laser pointer opt-in (persisted in Prefs; reachable in every state so the
+    // crew can toggle it mid-flight).
+    std::function<void(bool)>                              onPointerEnabledChanged;
+    void setPointerEnabled(bool v) { pointerEnabled_ = v; }
 
     bool init();
     void shutdown() { xpwShutdown(); }
@@ -66,6 +70,14 @@ public:
     void setIsHost(bool h) { isHost_ = h; }
 
     void setData(const Session* s, const AircraftConfig* c) { sess_ = s; aircraftCfg_ = c; }
+
+    // Prefill the connect form from persisted prefs (call before first render).
+    // Fills the text buffers AND mirrors into connCfg_ — InputText widgets only
+    // update connCfg_ on edit, so the buffers alone are not enough.
+    void setConnectDefaults(const std::string& nick, const std::string& address,
+                            uint16_t hostPort, const std::string& password,
+                            const std::string& bindIp,
+                            bool requireJoinApproval, bool requireControlApproval);
 
     // Pending join queue (host only)
     struct PendingJoin { uint8_t connId; std::string nick; };
@@ -102,6 +114,8 @@ private:
     std::vector<std::string> bindIps_;
     bool                     bindIpsLoaded_ = false;
     int                      bindIpSel_     = 0;   // 0 = Auto (all interfaces)
+    // Bind IP restored from prefs; resolved against bindIps_ on first render.
+    std::string              pendingBindIp_;
 
     // Pending joins (host)
     std::vector<PendingJoin> pendingJoins_;
@@ -120,7 +134,10 @@ private:
     std::vector<std::pair<std::string,std::string>> libList_;
     int         libSel_ = 0;
 
+    bool pointerEnabled_ = false;
+
     void renderConnectForm();
+    void renderSettingsSection();
     void renderHostedView();
     void renderClientView();
     void renderLobbyTable();

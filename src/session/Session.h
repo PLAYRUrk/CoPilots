@@ -7,15 +7,32 @@
 #include <unordered_map>
 #include <mutex>
 #include <functional>
+#include <chrono>
 
 namespace cp {
 
 using AuthorityMap = std::unordered_map<std::string, ParticipantId>;
 
+// Departed-participant memory (host side): lets a crew member who lost their sim
+// rejoin within GHOST_TTL_S and get their role/zones/master status back.
+struct Ghost {
+    std::string nick;
+    std::string roleId;
+    std::vector<std::string> zoneIds;
+    bool wasPhysicsMaster = false;
+    bool wasWeatherMaster = false;
+    std::chrono::steady_clock::time_point departTime;
+};
+
 class Session {
 public:
     ParticipantId addParticipant(const std::string& nick);
+    // Client-side roster mirror: adopt the host-assigned ID verbatim (rosters may
+    // have ID gaps once participants have departed — IDs are never reused).
+    ParticipantId addParticipantWithId(ParticipantId id, const std::string& nick);
     void          removeParticipant(ParticipantId id);
+    bool          hasNickOnline(const std::string& nick) const;
+    bool          popGhost(const std::string& nick, Ghost& out);
     bool          setRole(ParticipantId id, const std::string& roleId,
                           const std::vector<Role>& availableRoles);
     bool          assignZones(ParticipantId id, const std::vector<std::string>& zoneIds);
@@ -51,10 +68,14 @@ private:
     ParticipantId            myId_            = INVALID_PARTICIPANT_ID;
     bool                     isHost_          = false;
 
+    std::vector<Ghost>       ghosts_;   // host only
+    static constexpr double  GHOST_TTL_S = 600.0;
+
     mutable std::mutex mu_;
 
     Participant* findMut(ParticipantId id);
     void         notifyChanged();
+    void         purgeExpiredGhosts();  // callers hold mu_
     uint8_t      nextId_ = 1;
 };
 

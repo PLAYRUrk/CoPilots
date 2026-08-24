@@ -1,0 +1,4 @@
+{
+  "submit_url": "https://copilots-cal.pleeey.workers.dev",
+  "_note": "Address of the calibration submission worker (tools/cal-worker). While it is empty the plugin's Share button opens a prefilled GitHub issue instead."
+}

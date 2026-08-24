@@ -107,6 +107,7 @@ void NetThread::serverLoop(uint16_t tcpPort, uint16_t udpPort, const std::string
                 ClientConn cc;
                 cc.id   = nextId++;
                 cc.sock = cs;
+                cc.lastRecvMs = NowMs();
 
                 // Record remote IP so main thread can build UDP endpoint after HELLO
                 sockaddr_in peer{};
@@ -175,6 +176,7 @@ void NetThread::serverLoop(uint16_t tcpPort, uint16_t udpPort, const std::string
                 CloseSocket(c.sock);
                 toRemove.push_back(i);
             } else if (n > 0) {
+                c.lastRecvMs = NowMs();
                 const uint8_t cid = c.id;
                 c.framer.feed(tcpBuf, static_cast<size_t>(n),
                     [&](uint8_t type, const uint8_t* payload, uint32_t plen) {
@@ -185,6 +187,27 @@ void NetThread::serverLoop(uint16_t tcpPort, uint16_t udpPort, const std::string
                         inTcp.push(std::move(msg));
                     });
             }
+        }
+        // Heartbeat timeout: drop connections that went silent (hard sim crash
+        // sends no TCP FIN — without this the ghost sits in the lobby forever).
+        {
+            uint64_t nowMs = NowMs();
+            for (size_t i = 0; i < clients.size(); ++i) {
+                auto& c = clients[i];
+                if (std::find(toRemove.begin(), toRemove.end(), i) != toRemove.end())
+                    continue;
+                if (nowMs - c.lastRecvMs > RECV_TIMEOUT_MS) {
+                    Log("NetThread(server): client %u timed out (no data for %llu ms)",
+                        c.id, static_cast<unsigned long long>(nowMs - c.lastRecvMs));
+                    InboundMsg disc;
+                    disc.sender = c.id;
+                    disc.type   = 0xFE;
+                    inTcp.push(std::move(disc));
+                    CloseSocket(c.sock);
+                    toRemove.push_back(i);
+                }
+            }
+            std::sort(toRemove.begin(), toRemove.end());
         }
         for (int ri = static_cast<int>(toRemove.size())-1; ri >= 0; --ri)
             clients.erase(clients.begin() + toRemove[ri]);
@@ -285,7 +308,8 @@ void NetThread::clientLoop(const std::string& host, uint16_t tcpPort, uint16_t u
     TcpFramer framer;
     uint8_t tcpBuf[4096];
     uint8_t udpBuf[4096];
-    uint64_t lastHb = NowMs();
+    uint64_t lastHb   = NowMs();
+    uint64_t lastRecv = NowMs();
 
     while (!stopFlag_) {
         fd_set rset;
@@ -309,6 +333,7 @@ void NetThread::clientLoop(const std::string& host, uint16_t tcpPort, uint16_t u
                 inTcp.push(std::move(disc));
                 break;
             } else if (n > 0) {
+                lastRecv = NowMs();
                 framer.feed(tcpBuf, static_cast<size_t>(n),
                     [&](uint8_t type, const uint8_t* payload, uint32_t plen) {
                         InboundMsg msg;
@@ -342,6 +367,18 @@ void NetThread::clientLoop(const std::string& host, uint16_t tcpPort, uint16_t u
         }
 
         uint64_t now = NowMs();
+        if (now - lastRecv > RECV_TIMEOUT_MS) {
+            Log("NetThread(client): server timed out (no data for %llu ms)",
+                static_cast<unsigned long long>(now - lastRecv));
+            InboundMsg disc;
+            disc.sender = 0;
+            disc.type   = 0xFE;
+            // Non-empty payload marks a timeout (vs a clean close) for the UI.
+            static const char kReason[] = "timeout";
+            disc.payload.assign(kReason, kReason + sizeof(kReason) - 1);
+            inTcp.push(std::move(disc));
+            break;
+        }
         if (now - lastHb > 1000) {
             lastHb = now;
             uint8_t hb[5] = {0xF0, 0,0,0,0};

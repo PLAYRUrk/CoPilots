@@ -2,6 +2,7 @@
 #include "../Log.h"
 
 #include <imgui.h>
+#include <imgui_internal.h>   // ClearActiveID on focus loss
 #include <imgui_impl_opengl3.h>
 #include <XPLM/XPLMGraphics.h>
 #include <XPLM/XPLMUtilities.h>
@@ -82,6 +83,20 @@ void XPImguiWindow::xpwSetVisible(bool v)
 {
     xpVisible_ = v;
     if (xpWin_) XPLMSetWindowIsVisible(xpWin_, v ? 1 : 0);
+    if (!v) {
+        // A hidden window holding the keyboard swallows every keystroke with
+        // nothing on screen to show for it; a button still logically held down
+        // makes the next click a no-op once the window comes back.
+        if (xpWin_ && XPLMHasKeyboardFocus(xpWin_)) XPLMTakeKeyboardFocus(0);
+        hasKbFocus_ = false;
+        if (imCtx_) {
+            ImGui::SetCurrentContext(imCtx_);
+            ImGuiIO& io = ImGui::GetIO();
+            io.AddMouseButtonEvent(0, false);
+            io.AddMouseButtonEvent(1, false);
+        }
+        isDragging_ = false;
+    }
 }
 
 bool XPImguiWindow::xpwBeginWindow(const char* title, ImGuiWindowFlags extraFlags)
@@ -158,12 +173,28 @@ void XPImguiWindow::onDraw()
     XPLMGetMouseLocationGlobal(&mx, &my);
     io.AddMousePosEvent(float(mx), float(screenH - my));
 
-    bool wantKb = io.WantCaptureKeyboard;
-    if (wantKb != hasKbFocus_) {
-        if (wantKb) XPLMTakeKeyboardFocus(xpWin_);
-        else        XPLMTakeKeyboardFocus(0);
-        hasKbFocus_ = wantKb;
+    // X-Plane hands the keyboard around on its own (another plugin window, the
+    // window manager, the sim itself), and it does not ask first.  A cached
+    // "we have focus" flag therefore goes stale, and while it was stale this
+    // window never asked for the keyboard back: text fields showed a caret and
+    // silently dropped every keystroke.  Ask X-Plane instead.
+    const bool wantKb = io.WantCaptureKeyboard || io.WantTextInput;
+    const bool haveKb = XPLMHasKeyboardFocus(xpWin_) != 0;
+    if (wantKb && !haveKb) {
+        // Asking is normally granted at once.  If it is not, something else
+        // wants the keyboard just as badly, so stop after a few frames instead
+        // of trading focus with it forever and scattering the keystrokes.
+        if (++kbRetake_ > 5) {
+            ImGui::ClearActiveID();
+            kbRetake_ = 0;
+        } else {
+            XPLMTakeKeyboardFocus(xpWin_);
+        }
+    } else {
+        kbRetake_ = 0;
+        if (!wantKb && haveKb) XPLMTakeKeyboardFocus(0);
     }
+    hasKbFocus_ = wantKb && XPLMHasKeyboardFocus(xpWin_) != 0;
 
     GLint     vp[4];  glGetIntegerv(GL_VIEWPORT, vp);
     GLint     blendSrc, blendDst;
@@ -224,8 +255,9 @@ int XPImguiWindow::onMouse(int x, int y, XPLMMouseStatus status)
 
     if (status == xplm_MouseDown) {
         io.AddMouseButtonEvent(0, true);
-        // Take keyboard focus immediately on any click so InputText works on first keypress
-        if (!hasKbFocus_) {
+        // Take the keyboard on any click so a text field works from the first
+        // keypress; onDraw hands it back when ImGui stops wanting it.
+        if (!XPLMHasKeyboardFocus(xpWin_)) {
             XPLMTakeKeyboardFocus(xpWin_);
             hasKbFocus_ = true;
         }
@@ -257,6 +289,19 @@ int XPImguiWindow::onMouse(int x, int y, XPLMMouseStatus status)
     return 1;
 }
 
+int XPImguiWindow::onMouseR(int x, int y, XPLMMouseStatus status)
+{
+    // Forward the right button to ImGui (button 1) — the charts canvas pans
+    // with a right-drag.  No window dragging / focus logic on this button.
+    if (!imCtx_) return 1;
+    ImGui::SetCurrentContext(imCtx_);
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddMousePosEvent(float(x), float(screenH_ - y));
+    if (status == xplm_MouseDown)      io.AddMouseButtonEvent(1, true);
+    else if (status == xplm_MouseUp)   io.AddMouseButtonEvent(1, false);
+    return 1;
+}
+
 int XPImguiWindow::onScroll(int x, int y, int , int clicks)
 {
     if (!imCtx_) return 0;
@@ -267,11 +312,27 @@ int XPImguiWindow::onScroll(int x, int y, int , int clicks)
     return 1;
 }
 
-void XPImguiWindow::onKey(char key, XPLMKeyFlags flags, char vk, int )
+void XPImguiWindow::onKey(char key, XPLMKeyFlags flags, char vk, int losingFocus)
 {
     if (!imCtx_) return;
     ImGui::SetCurrentContext(imCtx_);
     ImGuiIO& io = ImGui::GetIO();
+
+    if (losingFocus) {
+        // Per the SDK, key/flags/vk carry nothing meaningful on this call.
+        // Feeding them to ImGui anyway injected a stray Enter or Escape that
+        // closed the field the user had just clicked into - the caret appeared
+        // and vanished - and could leave a modifier stuck down.
+        io.AddKeyEvent(ImGuiMod_Shift, false);
+        io.AddKeyEvent(ImGuiMod_Ctrl,  false);
+        io.AddKeyEvent(ImGuiMod_Alt,   false);
+        // Let the field go too: a window that cannot receive keys must not keep
+        // asking for the keyboard, or two windows with an active field take it
+        // from each other every frame and typing lands in whichever won.
+        ImGui::ClearActiveID();
+        hasKbFocus_ = false;
+        return;
+    }
 
     bool down = (flags & xplm_DownFlag) != 0;
 
@@ -305,7 +366,8 @@ void XPImguiWindow::onKey(char key, XPLMKeyFlags flags, char vk, int )
     if (imKey != ImGuiKey_None)
         io.AddKeyEvent(imKey, down);
 
-    if (down && key >= 32 && key < 127)
+    const bool modified = (flags & (xplm_ControlFlag | xplm_OptionAltFlag)) != 0;
+    if (down && !modified && key >= 32 && key < 127)
         io.AddInputCharacter(static_cast<unsigned int>(static_cast<unsigned char>(key)));
 }
 
@@ -319,9 +381,9 @@ int XPImguiWindow::MouseCB(XPLMWindowID, int x, int y, XPLMMouseStatus s, void* 
     return static_cast<XPImguiWindow*>(ref)->onMouse(x, y, s);
 }
 
-int XPImguiWindow::RClickCB(XPLMWindowID, int, int, XPLMMouseStatus, void*)
+int XPImguiWindow::RClickCB(XPLMWindowID, int x, int y, XPLMMouseStatus s, void* ref)
 {
-    return 1;
+    return static_cast<XPImguiWindow*>(ref)->onMouseR(x, y, s);
 }
 
 int XPImguiWindow::ScrollCB(XPLMWindowID, int x, int y, int w, int c, void* ref)

@@ -53,10 +53,12 @@ private:
     float titleBarH_  = 20.f;
     int   screenH_    = 0;
     bool  hasKbFocus_ = false;
+    int   kbRetake_   = 0;     // consecutive frames asking for the keyboard in vain
     std::chrono::steady_clock::time_point lastTime_;
 
     void onDraw();
     int  onMouse(int x, int y, XPLMMouseStatus s);
+    int  onMouseR(int x, int y, XPLMMouseStatus s);
     int  onScroll(int x, int y, int wheel, int clicks);
     void onKey(char key, XPLMKeyFlags flags, char vk, int losingFocus);
 

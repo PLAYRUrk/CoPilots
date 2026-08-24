@@ -7,7 +7,10 @@
 namespace cp {
 namespace proto {
 
-constexpr uint8_t PROTOCOL_VERSION = 4;  // v4: parkbrake_ratio appended to PhysicsState
+constexpr uint8_t PROTOCOL_VERSION = 8;  // v8: chart calibrations carry the airport and the override flag
+                                         // v6: ChartFox shared chart tabs (CF_* 0x60–0x68)
+                                         // v5: host-assigned participant IDs mirrored on
+                                         // clients (roster may have ID gaps), POINTER_STATE UDP
 constexpr size_t  TCP_HEADER_SIZE  = 5;
 
 enum class MsgType : uint8_t {
@@ -55,6 +58,28 @@ enum class MsgType : uint8_t {
                                 //   (Active Sky / real-weather-from-file crews get the
                                 //   exact same weather source on every machine)
 
+    // ChartFox shared chart tabs (0x60–0x68).  Only ICAO, selected chart ID
+    // and annotation strokes are networked — chart files never are (each
+    // client downloads them with its own ChartFox token).
+    CF_TAB_SHARE       = 0x60,  // any → host → all:  a chart tab is now shared
+    CF_TAB_SET_AIRPORT = 0x61,  // owner → host → all: tab airport (ICAO) changed
+    CF_TAB_SET_CHART   = 0x62,  // any → host → all:  selected chart changed ("" = none)
+    CF_STROKE_ADD      = 0x63,  // any → host → all:  one stroke on (chartId, page)
+    CF_STROKE_DEL      = 0x64,  // any → host → all:  delete stroke by ID (smart eraser)
+    CF_TAB_DEL         = 0x65,  // owner → host → all: delete a shared chart tab
+    CF_SNAP_REQ        = 0x66,  // client → host:      request shared-charts snapshot
+    CF_SNAP_TAB        = 0x67,  // host → client:      one tab / annot set (chunked)
+    CF_SNAP_END        = 0x68,  // host → client:      snapshot complete
+    // Manual calibrations of charts ChartFox does not georeference (0x69–0x6A).
+    // Only the four transform numbers travel — they are relative to the chart
+    // page, which every client renders from its own download.
+    CF_CAL_SET         = 0x69,  // any → host → all:  set/clear a calibration
+    CF_SNAP_CAL        = 0x6A,  // host → client:      all known calibrations
+    // Both carry, per calibration: chartId, page, [clear,] icao, override flag
+    // and the four georeference numbers.  The airport lets a received
+    // calibration reach the shared database; the flag keeps the precedence
+    // against a ChartFox georeference identical on every client.
+
     HEARTBEAT          = 0xF0,
     CHAT               = 0xF1,
 };
@@ -65,6 +90,7 @@ enum class UdpType : uint8_t {
     PING           = 0x03,
     PONG           = 0x04,
     ANNOUNCE       = 0x05,  // client → server: learn my UDP endpoint
+    POINTER_STATE  = 0x06,  // any → server → all: shared cockpit laser pointer
 };
 
 enum class ValType : uint8_t {
@@ -155,6 +181,16 @@ struct UdpPong {
     uint8_t  type = static_cast<uint8_t>(UdpType::PONG);
     uint16_t seq;
     uint64_t timestamp_ms;
+};
+
+// Shared cockpit laser pointer.  The hit point is expressed in the AIRCRAFT-BODY
+// frame (meters) so it is stable on the moving aircraft and transferable between
+// machines whose local-OpenGL origins differ.
+struct PointerState {
+    uint8_t type      = static_cast<uint8_t>(UdpType::POINTER_STATE);
+    uint8_t sender_id = 0xFF;   // participant ID (drives the pointer color)
+    uint8_t active    = 0;      // 1 = pointing, 0 = released
+    float   x = 0, y = 0, z = 0;
 };
 #pragma pack(pop)
 

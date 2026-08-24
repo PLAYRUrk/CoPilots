@@ -1,8 +1,10 @@
 #include "Log.h"
 #include "config/Config.h"
+#include "config/Prefs.h"
 #include "sync/DatarefRegistry.h"
 #include "sync/SyncEngine.h"
 #include "sync/PhysicsSync.h"
+#include "sync/PointerSync.h"
 #include "sync/WeatherSync.h"
 #include "sync/FmsPlanSync.h"
 #include "session/Session.h"
@@ -14,6 +16,9 @@
 #include "ui/StatusHud.h"
 #include "ui/NotepadWindow.h"
 #include "ui/Notepad.h"
+#include "ui/ChartsWindow.h"
+#include "chart/ChartFoxAppConfig.h"
+#include "chart/ChartTypes.h"
 
 #include <XPLM/XPLMPlugin.h>
 #include <XPLM/XPLMDisplay.h>
@@ -42,15 +47,19 @@ struct CoPilotsPlugin {
     cp::net::ConfigDownloader cfgDownloader;
     cp::SyncEngine          syncEngine;
     cp::PhysicsSync         physicsSync;
+    cp::PointerSync         pointerSync;
     cp::WeatherSync         weatherSync;
     cp::FmsPlanSync         fmsSync;
 
     cp::ui::ConnectionWindow connWin;
     cp::ui::StatusHud        statusHud;
     cp::ui::NotepadWindow    notepadWin;
+    cp::ui::ChartsWindow     chartsWin;
 
     // Host-authoritative shared notepad state (host only; cleared on disconnect).
     cp::notepad::Notepad     sharedNotepad_;
+    // Host-authoritative shared ChartFox tabs (host only; cleared on disconnect).
+    cp::chart::SharedCharts  sharedCharts_;
 
     // Maps TCP connection ID (from network thread) → participant ID (from session)
     std::map<uint8_t, cp::ParticipantId> connIdMap_;
@@ -65,10 +74,22 @@ struct CoPilotsPlugin {
     struct PendingConn { uint8_t connId; std::string nick; uint32_t drHash; };
     std::vector<PendingConn> pendingConns_;
 
+    // Deferred physics-master restore after a rejoin: granting instantly would
+    // teleport the crew to the rejoiner's stale position; the delay lets its
+    // PhysicsSync snap to the current master first.
+    struct PendingPhysRestore {
+        cp::ParticipantId pid = cp::INVALID_PARTICIPANT_ID;
+        float delayS = 0.f;
+    } pendingPhysRestore_;
+
     XPLMMenuID menuId    = nullptr;
     int        menuItem  = -1;
 
     XPLMFlightLoopID flLoop = nullptr;
+
+    // Shared laser pointer: hold-to-aim command + 3-D draw callback.
+    XPLMCommandRef cmdPointer_ = nullptr;
+    bool pointerEnabledPref_ = false;  // Prefs::pointerEnabled, loaded in onEnable
 
     bool active = false;
 
@@ -94,6 +115,28 @@ struct CoPilotsPlugin {
             XPLMGetSystemPath(xpPath);
             xpSystemPath_ = xpPath;
         }
+
+        // Prefill the connect form from persisted prefs so a crew member whose
+        // sim crashed mid-flight can rejoin without retyping anything.
+        {
+            cp::Prefs prefs;
+            if (cp::LoadPrefs(xpSystemPath_, prefs))
+                connWin.setConnectDefaults(prefs.nick, prefs.address, prefs.hostPort,
+                                           prefs.password, prefs.bindIp,
+                                           prefs.requireJoinApproval,
+                                           prefs.requireControlApproval);
+            pointerEnabledPref_ = prefs.pointerEnabled;
+            connWin.setPointerEnabled(prefs.pointerEnabled);
+        }
+
+        connWin.onPointerEnabledChanged = [this](bool en) {
+            pointerEnabledPref_ = en;
+            pointerSync.setEnabled(en);
+            cp::Prefs p;
+            cp::LoadPrefs(xpSystemPath_, p);   // keep untouched fields
+            p.pointerEnabled = en;
+            cp::SavePrefs(xpSystemPath_, p);
+        };
 
         session.onChanged = [this]() { };
 
@@ -122,26 +165,13 @@ struct CoPilotsPlugin {
             out.target = 0xFF;
             out.frame  = std::move(frame);
             netThread.outTcp.push(std::move(out));
-            session.removeParticipant(pid);
+            handleParticipantGone(pid);
         };
         connWin.onPhysicsMasterSet = [this](cp::ParticipantId pid) {
-            session.setPhysicsMaster(pid);
-            physicsSync.onMasterChanged();
-            auto frame = cp::proto::MsgBuilder(cp::proto::MsgType::PHYSICS_MASTER_SET)
-                         .u8(pid).build();
-            cp::net::OutboundMsg out;
-            out.target = 0xFF;
-            out.frame  = std::move(frame);
-            netThread.outTcp.push(std::move(out));
+            hostSetPhysicsMaster(pid);
         };
         connWin.onWeatherMasterSet = [this](cp::ParticipantId pid) {
-            session.setWeatherMaster(pid);
-            auto frame = cp::proto::MsgBuilder(cp::proto::MsgType::WEATHER_MASTER_SET)
-                         .u8(pid).build();
-            cp::net::OutboundMsg out;
-            out.target = 0xFF;
-            out.frame  = std::move(frame);
-            netThread.outTcp.push(std::move(out));
+            hostSetWeatherMaster(pid);
         };
 
         connWin.onAcceptJoin = [this](uint8_t connId) {
@@ -191,14 +221,7 @@ struct CoPilotsPlugin {
             netThread.outTcp.push(std::move(out));
         };
         connWin.onGrantControl = [this](cp::ParticipantId pid) {
-            session.setPhysicsMaster(pid);
-            physicsSync.onMasterChanged();
-            auto frame = cp::proto::MsgBuilder(cp::proto::MsgType::PHYSICS_MASTER_SET)
-                         .u8(pid).build();
-            cp::net::OutboundMsg out;
-            out.target = 0xFF;
-            out.frame  = std::move(frame);
-            netThread.outTcp.push(std::move(out));
+            hostSetPhysicsMaster(pid);
         };
         connWin.onDenyControl = [this](cp::ParticipantId pid) {
             for (const auto& [cid, ppid] : connIdMap_) {
@@ -230,13 +253,88 @@ struct CoPilotsPlugin {
             netThread.outTcp.push(std::move(out));
         };
 
+        // ChartFox charts window: pdfium.dll lives next to the plugin binary.
+        {
+            std::string pluginDir;
+            char path[512] = {};
+            XPLMGetPluginInfo(XPLMGetMyID(), nullptr, path, nullptr, nullptr);
+            pluginDir = path;
+            size_t sep = pluginDir.find_last_of("/\\");
+            if (sep != std::string::npos) pluginDir = pluginDir.substr(0, sep);
+            chartsWin.init(pluginDir, xpSystemPath_);
+        }
+        chartsWin.setSession(&session);
+        chartsWin.sendFn = [this](std::vector<uint8_t> frame) {
+            cp::net::OutboundMsg out;
+            out.target = 0xFF;
+            out.frame  = std::move(frame);
+            netThread.outTcp.push(std::move(out));
+        };
+        {
+            cp::Prefs prefs;
+            cp::LoadPrefs(xpSystemPath_, prefs);
+            chartsWin.setToken(prefs.chartfoxToken);
+            chartsWin.setCalSubmitUrl(prefs.calSubmitUrl);
+            // A stored scope list equal to an older build's built-in default is
+            // a leftover, not a deliberate override: drop it so the current
+            // built-in set (which gained charts:geos) takes effect.
+            std::string scopes = prefs.chartfoxScopes;
+            if (scopes == cp::chart::kChartFoxLegacyScopes) scopes.clear();
+            chartsWin.setOauth(prefs.chartfoxClientId, prefs.chartfoxClientSecret,
+                               prefs.chartfoxRedirectUri, scopes,
+                               prefs.chartfoxAccessToken, prefs.chartfoxRefreshToken,
+                               prefs.chartfoxTokenExpiry, prefs.chartfoxTokenScopes);
+        }
+        chartsWin.onTokenChanged = [this](const std::string& token) {
+            cp::Prefs p;
+            cp::LoadPrefs(xpSystemPath_, p);   // keep untouched fields
+            p.chartfoxToken = token;
+            cp::SavePrefs(xpSystemPath_, p);
+        };
+        chartsWin.onOauthClientChanged = [this](const std::string& id,
+                                                const std::string& secret,
+                                                const std::string& redirect,
+                                                const std::string& scopes) {
+            cp::Prefs p;
+            cp::LoadPrefs(xpSystemPath_, p);
+            p.chartfoxClientId     = id;
+            p.chartfoxClientSecret = secret;
+            p.chartfoxRedirectUri  = redirect;
+            p.chartfoxScopes       = scopes;
+            cp::SavePrefs(xpSystemPath_, p);
+        };
+        chartsWin.onOauthTokensChanged = [this](const std::string& access,
+                                                const std::string& refresh,
+                                                int64_t expiry,
+                                                const std::string& tokenScopes) {
+            cp::Prefs p;
+            cp::LoadPrefs(xpSystemPath_, p);
+            p.chartfoxAccessToken  = access;
+            p.chartfoxRefreshToken = refresh;
+            p.chartfoxTokenExpiry  = expiry;
+            p.chartfoxTokenScopes  = tokenScopes;
+            cp::SavePrefs(xpSystemPath_, p);
+        };
+        chartsWin.setVisible(false);   // opened via menu / HUD button
+
         // StatusHud quick-open buttons
         statusHud.onToggleConn    = [this]() { connWin.setVisible(!connWin.visible()); };
         statusHud.onToggleNotepad = [this]() { notepadWin.setVisible(!notepadWin.visible()); };
+        statusHud.onToggleCharts  = [this]() { chartsWin.setVisible(!chartsWin.visible()); };
         weatherSync.init(&session, &netThread, xpSystemPath_);
         fmsSync.init(&netThread, xpSystemPath_);
         drPaused_       = XPLMFindDataRef("sim/time/paused");
         cmdPauseToggle_ = XPLMFindCommand("sim/operation/pause_toggle");
+
+        // Shared laser pointer: bindable hold command + 3-D draw callback.
+        // The command is plugin-owned and never enters the DatarefRegistry, so
+        // it is not relayed by the SyncEngine command sync.
+        pointerSync.init(&session, &netThread);
+        pointerSync.setEnabled(pointerEnabledPref_);
+        cmdPointer_ = XPLMCreateCommand("CoPilots/pointer_hold",
+                                        "Hold to aim shared laser pointer");
+        XPLMRegisterCommandHandler(cmdPointer_, pointerCmdCb, 1, this);
+        XPLMRegisterDrawCallback(pointerDrawCb, xplm_Phase_Airplanes, 0 /*after*/, this);
 
         XPLMCreateFlightLoop_t params{};
         params.structSize = sizeof(params);
@@ -254,10 +352,30 @@ struct CoPilotsPlugin {
         Log("CoPilots ready — open Plugins > CoPilots to connect");
     }
 
+    static int pointerCmdCb(XPLMCommandRef, XPLMCommandPhase phase, void* ref)
+    {
+        auto* self = static_cast<CoPilotsPlugin*>(ref);
+        if (phase == xplm_CommandBegin)    self->pointerSync.setHolding(true);
+        else if (phase == xplm_CommandEnd) self->pointerSync.setHolding(false);
+        return 1;
+    }
+
+    static int pointerDrawCb(XPLMDrawingPhase, int, void* ref)
+    {
+        static_cast<CoPilotsPlugin*>(ref)->pointerSync.onDraw();
+        return 1;
+    }
+
     void onDisablePlugin()
     {
         if (!active) return;
         active = false;
+
+        XPLMUnregisterDrawCallback(pointerDrawCb, xplm_Phase_Airplanes, 0, this);
+        if (cmdPointer_) {
+            XPLMUnregisterCommandHandler(cmdPointer_, pointerCmdCb, 1, this);
+            cmdPointer_ = nullptr;
+        }
 
         onDisconnect();
 
@@ -267,6 +385,7 @@ struct CoPilotsPlugin {
         connWin.shutdown();
         statusHud.shutdown();
         notepadWin.shutdown();
+        chartsWin.shutdown();
         cp::net::ShutdownNetwork();
         Log("Plugin disabled");
     }
@@ -274,6 +393,11 @@ struct CoPilotsPlugin {
     void onFlightLoop(float inElapsed)
     {
         if (!active) return;
+
+        // ChartFox OAuth: finish a code exchange and refresh tokens even when the
+        // Charts window is closed (it used to tick only while rendering, so a
+        // login started and then dismissed never completed).
+        chartsWin.tickBackground();
 
         // Clamp dt to a sane range: guard against first-frame zero, paused sim
         // spike, or sim-speed values that would blow up the feed-forward integrator.
@@ -315,6 +439,15 @@ struct CoPilotsPlugin {
                     // empty `to` triggers broadcast in serverLoop
                     netThread.outUdp.push(std::move(relay));
                 }
+            } else if (t == static_cast<uint8_t>(cp::proto::UdpType::POINTER_STATE)) {
+                pointerSync.onUdpDatagram(dg.data.data(), dg.data.size());
+                if (session.isHost()) {
+                    cp::net::UdpDatagram relay;
+                    relay.data = dg.data;
+                    // empty `to` triggers broadcast in serverLoop; the sender
+                    // drops its own echo by sender_id
+                    netThread.outUdp.push(std::move(relay));
+                }
             } else if (t == static_cast<uint8_t>(cp::proto::UdpType::ANNOUNCE)
                        && dg.data.size() >= 2 && session.isHost()) {
                 // Client announcing its UDP endpoint so we can send physics to it
@@ -354,6 +487,19 @@ struct CoPilotsPlugin {
 
         if (netThread.connected)
             weatherSync.tick(1.f / 60.f);
+
+        // Deferred physics-master restore after a rejoin (see acceptJoin).
+        if (session.isHost() && pendingPhysRestore_.pid != cp::INVALID_PARTICIPANT_ID) {
+            pendingPhysRestore_.delayS -= static_cast<float>(dt);
+            if (pendingPhysRestore_.delayS <= 0.f) {
+                cp::ParticipantId pid = pendingPhysRestore_.pid;
+                pendingPhysRestore_ = {};
+                if (session.find(pid)) {
+                    Log("CoPilots: restoring physics master to rejoined participant %u", pid);
+                    hostSetPhysicsMaster(pid);
+                }
+            }
+        }
 
         // Flight-plan folder sync (Output/FMS plans): announce + periodic rescan.
         fmsSync.tick(static_cast<float>(dt), netThread.connected);
@@ -421,10 +567,82 @@ struct CoPilotsPlugin {
 
     }
 
+    // Host-side master reassignment: apply locally AND broadcast, so clients
+    // unlatch overrides / retarget their stale-packet filter.  (The silent
+    // Session-internal fallback on removeParticipant is not enough.)
+    void hostSetPhysicsMaster(cp::ParticipantId pid)
+    {
+        pendingPhysRestore_ = {};
+        session.setPhysicsMaster(pid);
+        physicsSync.onMasterChanged();
+        auto frame = cp::proto::MsgBuilder(cp::proto::MsgType::PHYSICS_MASTER_SET)
+                     .u8(pid).build();
+        cp::net::OutboundMsg out;
+        out.target = 0xFF;
+        out.frame  = std::move(frame);
+        netThread.outTcp.push(std::move(out));
+    }
+
+    void hostSetWeatherMaster(cp::ParticipantId pid)
+    {
+        session.setWeatherMaster(pid);
+        auto frame = cp::proto::MsgBuilder(cp::proto::MsgType::WEATHER_MASTER_SET)
+                     .u8(pid).build();
+        cp::net::OutboundMsg out;
+        out.target = 0xFF;
+        out.frame  = std::move(frame);
+        netThread.outTcp.push(std::move(out));
+    }
+
+    // Host-side departure handling shared by disconnect (0xFE) and kick: if the
+    // departed participant was a master, take over explicitly with a broadcast.
+    void handleParticipantGone(cp::ParticipantId pid)
+    {
+        cp::ParticipantId prevPhys = session.physicsMasterId();
+        cp::ParticipantId prevWx   = session.weatherMasterId();
+        session.removeParticipant(pid);
+        if (pendingPhysRestore_.pid == pid) pendingPhysRestore_ = {};
+        if (prevPhys == pid) {
+            Log("CoPilots: physics master (pid=%u) left — host taking over", pid);
+            hostSetPhysicsMaster(session.myId());
+        }
+        if (prevWx == pid) {
+            Log("CoPilots: weather master (pid=%u) left — host taking over", pid);
+            hostSetWeatherMaster(session.myId());
+        }
+    }
+
     void acceptJoin(uint8_t connId, const std::string& nick)
     {
         using MT = cp::proto::MsgType;
+
+        // Rejoin restore: if this nick departed recently (sim crash), give back
+        // its role/zones/master status.  Skipped when the nick is already online
+        // (a second player picking the same name must not steal a ghost).
+        cp::Ghost ghost;
+        bool restore = !session.hasNickOnline(nick) && session.popGhost(nick, ghost);
+
         cp::ParticipantId pid = session.addParticipant(nick);
+
+        if (restore) {
+            if (!ghost.roleId.empty())
+                session.setRole(pid, ghost.roleId, config.get().roles);
+            // Restore only zones that are still unowned (or already ours via the
+            // role defaults) — a zone the host manually reassigned to someone else
+            // during the outage is not stolen back.
+            std::vector<std::string> zones;
+            for (const auto& z : ghost.zoneIds) {
+                cp::ParticipantId owner = session.authorityFor(z);
+                if (owner == cp::INVALID_PARTICIPANT_ID || owner == pid)
+                    zones.push_back(z);
+            }
+            session.assignZones(pid, zones);
+            Log("CoPilots: restoring '%s' (pid=%u): role='%s', %zu/%zu zones%s%s",
+                nick.c_str(), pid, ghost.roleId.c_str(),
+                zones.size(), ghost.zoneIds.size(),
+                ghost.wasPhysicsMaster ? ", physics master (deferred)" : "",
+                ghost.wasWeatherMaster ? ", weather master" : "");
+        }
 
         auto wb = cp::proto::MsgBuilder(MT::WELCOME).u8(pid);
         wb.u16(static_cast<uint16_t>(session.participants().size()));
@@ -439,6 +657,17 @@ struct CoPilotsPlugin {
         welcomeOut.frame  = wb.build();
         netThread.outTcp.push(std::move(welcomeOut));
 
+        // WELCOME carries only the physics master; tell the joiner who the
+        // weather master is (TCP per-connection ordering puts this after WELCOME).
+        {
+            auto mb = cp::proto::MsgBuilder(MT::WEATHER_MASTER_SET)
+                      .u8(session.weatherMasterId()).build();
+            cp::net::OutboundMsg mout;
+            mout.target = connId;
+            mout.frame  = std::move(mb);
+            netThread.outTcp.push(std::move(mout));
+        }
+
         auto jb = cp::proto::MsgBuilder(MT::PARTICIPANT_JOIN).u8(pid).str(nick);
         cp::net::OutboundMsg joinOut;
         joinOut.target = 0xFF;
@@ -451,6 +680,13 @@ struct CoPilotsPlugin {
         // Send the host's flight-plan inventory directly to the new client —
         // the session-start broadcast happened before this client connected.
         fmsSync.announce(connId);
+
+        if (restore) {
+            if (ghost.wasWeatherMaster)
+                hostSetWeatherMaster(pid);
+            if (ghost.wasPhysicsMaster)
+                pendingPhysRestore_ = {pid, 5.0f};
+        }
         Log("CoPilots: accepted join from '%s' as participant %u", nick.c_str(), pid);
     }
 
@@ -470,17 +706,21 @@ struct CoPilotsPlugin {
 
         case static_cast<MT>(0xFE): {
             if (msg.sender == 0) {
-                // Client side: the host closed the connection
-                Log("CoPilots: host disconnected");
+                // Client side: the host closed the connection (or went silent —
+                // NetThread puts "timeout" in the payload for a heartbeat timeout).
+                bool timeout = !msg.payload.empty();
+                Log("CoPilots: host disconnected%s", timeout ? " (timeout)" : "");
                 onDisconnect();
-                connWin.setState(cp::ui::ConnState::CONNECT_ERROR, "Host disconnected.");
+                connWin.setState(cp::ui::ConnState::CONNECT_ERROR,
+                                 timeout ? "Connection lost (timeout) — you can rejoin."
+                                         : "Host disconnected.");
                 break;
             }
             // Server side: a client disconnected
             auto it = connIdMap_.find(msg.sender);
             if (it != connIdMap_.end()) {
                 cp::ParticipantId pid = it->second;
-                session.removeParticipant(pid);
+                handleParticipantGone(pid);
                 auto frame = cp::proto::MsgBuilder(MT::PARTICIPANT_LEAVE).u8(pid).build();
                 cp::net::OutboundMsg leaveOut;
                 leaveOut.target = 0xFF;
@@ -575,7 +815,9 @@ struct CoPilotsPlugin {
                 uint8_t nzones      = r.u8();
                 std::vector<std::string> zones;
                 for (uint8_t z = 0; z < nzones; ++z) zones.push_back(r.str());
-                session.addParticipant(nick);
+                // Adopt the host-assigned ID verbatim: after departures the roster
+                // has ID gaps (IDs are never reused), so a local counter diverges.
+                session.addParticipantWithId(pid, nick);
                 session.assignZones(pid, zones);
                 session.setRole(pid, roleId, config.get().roles);
             }
@@ -599,6 +841,14 @@ struct CoPilotsPlugin {
                 sreq.frame  = std::move(snapReq);
                 netThread.outTcp.push(std::move(sreq));
             }
+            // ... and of all shared chart tabs
+            {
+                auto snapReq = cp::proto::MsgBuilder(MT::CF_SNAP_REQ).build();
+                cp::net::OutboundMsg sreq;
+                sreq.target = 0;
+                sreq.frame  = std::move(snapReq);
+                netThread.outTcp.push(std::move(sreq));
+            }
             break;
         }
 
@@ -607,7 +857,7 @@ struct CoPilotsPlugin {
             std::string nick = r.str();
             // Skip if we already know this participant (received in WELCOME)
             if (!session.find(pid))
-                session.addParticipant(nick);
+                session.addParticipantWithId(pid, nick);
             // Re-broadcast our flight-plan inventory so the new joiner learns
             // about plans announced before it connected (host relays to all;
             // receivers request only what they are missing, so this is cheap).
@@ -825,12 +1075,7 @@ struct CoPilotsPlugin {
                 Log("CoPilots: control request from '%s' (pid=%u)", p->nick.c_str(), pid);
             } else {
                 // Auto-approve
-                session.setPhysicsMaster(pid);
-                physicsSync.onMasterChanged();
-                auto frame = cp::proto::MsgBuilder(MT::PHYSICS_MASTER_SET).u8(pid).build();
-                cp::net::OutboundMsg out;
-                out.target = 0xFF; out.frame = std::move(frame);
-                netThread.outTcp.push(std::move(out));
+                hostSetPhysicsMaster(pid);
                 Log("CoPilots: auto-granted controls to '%s'", p->nick.c_str());
             }
             break;
@@ -1198,6 +1443,278 @@ struct CoPilotsPlugin {
             notepadWin.onSnapEnd();
             break;
 
+        // ── ChartFox chart-tab messages ───────────────────────────────────────
+        case MT::CF_TAB_SHARE: {
+            using namespace cp::chart;
+            NpId tabId       = r.u32();
+            std::string icao = r.str();
+            std::string name = r.str();
+            chartsWin.onTabShare(tabId, icao, name);
+            if (session.isHost()) {
+                sharedCharts_.ensureSharedTab(tabId, icao, name);
+                relayRaw(msg);
+            }
+            break;
+        }
+
+        case MT::CF_TAB_SET_AIRPORT: {
+            using namespace cp::chart;
+            NpId tabId       = r.u32();
+            std::string icao = r.str();
+            chartsWin.onTabSetAirport(tabId, icao);
+            if (session.isHost()) {
+                ChartTab* tab = sharedCharts_.findTab(tabId);
+                if (tab && tab->icao != icao) {
+                    tab->icao = icao;
+                    tab->name = icao;
+                    tab->activeChartId.clear();
+                }
+                relayRaw(msg);
+            }
+            break;
+        }
+
+        case MT::CF_TAB_SET_CHART: {
+            using namespace cp::chart;
+            NpId tabId          = r.u32();
+            std::string chartId = r.str();
+            chartsWin.onTabSetChart(tabId, chartId);
+            if (session.isHost()) {
+                ChartTab* tab = sharedCharts_.findTab(tabId);
+                if (tab) tab->activeChartId = chartId;
+                relayRaw(msg);
+            }
+            break;
+        }
+
+        case MT::CF_STROKE_ADD: {
+            using namespace cp::chart;
+            NpId tabId          = r.u32();
+            std::string chartId = r.str();
+            uint8_t page        = r.u8();
+            Stroke stroke;
+            stroke.id        = r.u32();
+            stroke.tool      = static_cast<cp::notepad::Tool>(r.u8());
+            stroke.colorRGBA = r.u32();
+            stroke.thickness = r.f32();
+            uint16_t n       = r.u16();
+            stroke.pts.reserve(n);
+            for (uint16_t i = 0; i < n; ++i) {
+                float px = r.f32(), py = r.f32();
+                stroke.pts.push_back({px, py});
+            }
+            chartsWin.onStrokeAdd(tabId, chartId, page, stroke);
+            if (session.isHost()) {
+                ChartTab* tab = sharedCharts_.findTab(tabId);
+                if (tab) tab->annotsFor(chartId, page).applyStroke(stroke);
+                relayRaw(msg);
+            }
+            break;
+        }
+
+        case MT::CF_STROKE_DEL: {
+            using namespace cp::chart;
+            NpId tabId          = r.u32();
+            std::string chartId = r.str();
+            uint8_t page        = r.u8();
+            NpId strokeId       = r.u32();
+            chartsWin.onStrokeDel(tabId, chartId, page, strokeId);
+            if (session.isHost()) {
+                ChartTab* tab = sharedCharts_.findTab(tabId);
+                if (tab) {
+                    ChartAnnots* a = tab->findAnnots(chartId, page);
+                    if (a) a->removeStroke(strokeId);
+                }
+                relayRaw(msg);
+            }
+            break;
+        }
+
+        case MT::CF_CAL_SET: {
+            using namespace cp::chart;
+            std::string chartId = r.str();
+            uint8_t page1       = r.u8();
+            bool clear          = r.u8() != 0;
+            std::string icao    = r.str();
+            bool isOverride     = r.u8() != 0;
+            ChartGeoref g;
+            g.k              = r.f64();
+            g.tx             = r.f64();
+            g.ty             = r.f64();
+            g.transformAngle = r.f64();
+            g.page           = page1;
+            chartsWin.onCalSet(chartId, page1, clear, icao, isOverride, g);
+            if (session.isHost()) relayRaw(msg);
+            break;
+        }
+
+        case MT::CF_TAB_DEL: {
+            using namespace cp::chart;
+            NpId tabId = r.u32();
+            chartsWin.onTabDel(tabId);
+            if (session.isHost()) {
+                sharedCharts_.tabs.erase(
+                    std::remove_if(sharedCharts_.tabs.begin(), sharedCharts_.tabs.end(),
+                                   [tabId](const ChartTab& t){ return t.id == tabId; }),
+                    sharedCharts_.tabs.end());
+                relayRaw(msg);
+            }
+            break;
+        }
+
+        case MT::CF_SNAP_REQ: {
+            // Only the host answers; stream every shared tab to the requester.
+            if (!session.isHost()) break;
+            uint8_t target = msg.sender;
+
+            for (const auto& tab : sharedCharts_.tabs) {
+                if (!tab.shared) continue;
+
+                if (tab.annots.empty()) {
+                    // Tab-only chunk: no annotations yet, but the joiner still
+                    // needs the tab, its airport and the selected chart.
+                    auto b = cp::proto::MsgBuilder(MT::CF_SNAP_TAB)
+                             .u32(tab.id).str(tab.icao).str(tab.name)
+                             .str(tab.activeChartId)
+                             .str("")            // no annot set in this chunk
+                             .u8(0).u8(1).u16(0);
+                    cp::net::OutboundMsg out;
+                    out.target = target;
+                    out.frame  = b.build();
+                    netThread.outTcp.push(std::move(out));
+                    continue;
+                }
+
+                for (const auto& [key, annots] : tab.annots) {
+                    size_t idx = 0;
+                    bool firstChunk = true;
+                    while (idx <= annots.strokes.size()) {
+                        auto b = cp::proto::MsgBuilder(MT::CF_SNAP_TAB)
+                                 .u32(tab.id).str(tab.icao).str(tab.name)
+                                 .str(tab.activeChartId)
+                                 .str(key.first)     // chartId of this annot set
+                                 .u8(key.second)     // page
+                                 .u8(firstChunk ? 1 : 0);
+
+                        // Pack strokes into ~900 KiB chunks (NP_SNAP pattern).
+                        size_t chunkStart  = idx;
+                        size_t approxBytes = 64;
+                        uint16_t cnt = 0;
+                        while (idx < annots.strokes.size()) {
+                            const auto& stroke = annots.strokes[idx];
+                            size_t strokeBytes = 4+1+4+4+2 + stroke.pts.size()*8;
+                            if (approxBytes + strokeBytes > 900*1024) break;
+                            approxBytes += strokeBytes;
+                            ++cnt;
+                            ++idx;
+                        }
+
+                        b.u16(cnt);
+                        for (size_t si = chunkStart; si < chunkStart + cnt; ++si) {
+                            const auto& stroke = annots.strokes[si];
+                            b.u32(stroke.id)
+                             .u8(static_cast<uint8_t>(stroke.tool))
+                             .u32(stroke.colorRGBA)
+                             .f32(stroke.thickness)
+                             .u16(static_cast<uint16_t>(stroke.pts.size()));
+                            for (const auto& p : stroke.pts) b.f32(p.x).f32(p.y);
+                        }
+
+                        cp::net::OutboundMsg out;
+                        out.target = target;
+                        out.frame  = b.build();
+                        netThread.outTcp.push(std::move(out));
+
+                        firstChunk = false;
+                        if (idx >= annots.strokes.size()) break;
+                    }
+                }
+            }
+
+            // Calibrations are chart-scoped, not tab-scoped: send them all, so a
+            // joiner sees the aircraft symbol on charts the crew pinned by hand.
+            const auto& cals = chartsWin.calibrations();
+            if (!cals.empty()) {
+                auto b = cp::proto::MsgBuilder(MT::CF_SNAP_CAL);
+                b.u16(static_cast<uint16_t>(cals.size()));
+                for (const auto& [key, c] : cals) {
+                    std::string chartId;
+                    int page1 = 0;
+                    if (!cp::chart::ChartCalStore::splitKey(key, chartId, page1)) continue;
+                    b.str(chartId).u8(static_cast<uint8_t>(page1))
+                     .str(c.icao).u8(c.isOverride ? 1 : 0)
+                     .f64(c.g.k).f64(c.g.tx).f64(c.g.ty).f64(c.g.transformAngle);
+                }
+                cp::net::OutboundMsg out;
+                out.target = target;
+                out.frame  = b.build();
+                netThread.outTcp.push(std::move(out));
+            }
+
+            {
+                auto end = cp::proto::MsgBuilder(MT::CF_SNAP_END).build();
+                cp::net::OutboundMsg out;
+                out.target = target;
+                out.frame  = std::move(end);
+                netThread.outTcp.push(std::move(out));
+            }
+            break;
+        }
+
+        case MT::CF_SNAP_TAB: {
+            using namespace cp::chart;
+            NpId tabId           = r.u32();
+            std::string icao     = r.str();
+            std::string name     = r.str();
+            std::string activeId = r.str();
+            std::string chartId  = r.str();
+            uint8_t page         = r.u8();
+            bool isFirst         = (r.u8() != 0);
+            uint16_t cnt         = r.u16();
+            std::vector<Stroke> strokes;
+            strokes.reserve(cnt);
+            for (uint16_t i = 0; i < cnt; ++i) {
+                Stroke s;
+                s.id        = r.u32();
+                s.tool      = static_cast<cp::notepad::Tool>(r.u8());
+                s.colorRGBA = r.u32();
+                s.thickness = r.f32();
+                uint16_t np = r.u16();
+                s.pts.reserve(np);
+                for (uint16_t j = 0; j < np; ++j) {
+                    float px = r.f32(), py = r.f32();
+                    s.pts.push_back({px, py});
+                }
+                strokes.push_back(std::move(s));
+            }
+            chartsWin.onSnapTab(tabId, icao, name, activeId, chartId, page,
+                                isFirst, strokes);
+            break;
+        }
+
+        case MT::CF_SNAP_CAL: {
+            using namespace cp::chart;
+            uint16_t count = r.u16();
+            for (uint16_t i = 0; i < count; ++i) {
+                std::string chartId = r.str();
+                uint8_t page1       = r.u8();
+                std::string icao    = r.str();
+                bool isOverride     = r.u8() != 0;
+                ChartGeoref g;
+                g.k              = r.f64();
+                g.tx             = r.f64();
+                g.ty             = r.f64();
+                g.transformAngle = r.f64();
+                g.page           = page1;
+                chartsWin.onCalSet(chartId, page1, false, icao, isOverride, g);
+            }
+            break;
+        }
+
+        case MT::CF_SNAP_END:
+            chartsWin.onSnapEnd();
+            break;
+
         case MT::HEARTBEAT:
             break;
 
@@ -1205,6 +1722,24 @@ struct CoPilotsPlugin {
             LogWarning("Unhandled TCP message type 0x%02X", msg.type);
             break;
         }
+    }
+
+    // Host: re-frame an inbound message verbatim and broadcast it to all
+    // clients (originator excluded — it already applied the change locally).
+    void relayRaw(const cp::net::InboundMsg& msg)
+    {
+        cp::net::OutboundMsg relay;
+        relay.target        = 0xFF;
+        relay.excludeTarget = msg.sender;
+        relay.frame.resize(5 + msg.payload.size());
+        relay.frame[0] = msg.type;
+        uint32_t plen = static_cast<uint32_t>(msg.payload.size());
+        relay.frame[1] = plen & 0xFF;
+        relay.frame[2] = (plen >> 8)  & 0xFF;
+        relay.frame[3] = (plen >> 16) & 0xFF;
+        relay.frame[4] = (plen >> 24) & 0xFF;
+        std::copy(msg.payload.begin(), msg.payload.end(), relay.frame.begin() + 5);
+        netThread.outTcp.push(std::move(relay));
     }
 
     void broadcastAuthorityMap()
@@ -1267,8 +1802,30 @@ struct CoPilotsPlugin {
         netThread.outTcp.push(std::move(out));
     }
 
+    // Persist the connection form on every Host/Join click (not on success):
+    // after a sim restart the form must be prefilled even if the attempt failed.
+    void savePrefs(const cp::ui::ConnectionConfig& cfg)
+    {
+        cp::Prefs p;
+        // Keep whichever fields this click did not touch from the stored file.
+        cp::LoadPrefs(xpSystemPath_, p);
+        p.nick        = cfg.nick;
+        p.password    = cfg.password;
+        p.lastWasHost = cfg.asHost;
+        if (cfg.asHost) {
+            p.hostPort = cfg.port;
+            p.bindIp   = cfg.bindIp;
+            p.requireJoinApproval    = cfg.requireJoinApproval;
+            p.requireControlApproval = cfg.requireControlApproval;
+        } else {
+            p.address = cfg.host + ":" + std::to_string(cfg.port);
+        }
+        cp::SavePrefs(xpSystemPath_, p);
+    }
+
     void onHost(const cp::ui::ConnectionConfig& cfg)
     {
+        savePrefs(cfg);
         onDisconnect();
         connWin.setState(cp::ui::ConnState::CONNECTING);
         lobbyPassword_          = cfg.password;
@@ -1325,6 +1882,7 @@ struct CoPilotsPlugin {
 
     void onJoin(const cp::ui::ConnectionConfig& cfg)
     {
+        savePrefs(cfg);
         onDisconnect();
         connWin.setState(cp::ui::ConnState::CONNECTING);
 
@@ -1371,15 +1929,19 @@ struct CoPilotsPlugin {
         session.clear();
         syncEngine.reset();
         physicsSync.reset();
+        pointerSync.reset();
         weatherSync.reset();
         registry.clear();
         config.reset();
         connIdMap_.clear();
         connRemoteIp_.clear();
         pendingConns_.clear();
+        pendingPhysRestore_ = {};
         lobbyPassword_.clear();
         sharedNotepad_.clear();
         notepadWin.resetShared();
+        sharedCharts_.clear();
+        chartsWin.resetShared();
         connWin.setState(cp::ui::ConnState::IDLE);
     }
 
@@ -1411,6 +1973,8 @@ struct CoPilotsPlugin {
             statusHud.setVisible(!statusHud.visible());
         else if (item == 2)
             notepadWin.setVisible(!notepadWin.visible());
+        else if (item == 3)
+            chartsWin.setVisible(!chartsWin.visible());
     }
 };
 
@@ -1436,6 +2000,7 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc)
     XPLMAppendMenuItem(g_plugin->menuId, "Connect / Host", reinterpret_cast<void*>(0), 1);
     XPLMAppendMenuItem(g_plugin->menuId, "Toggle HUD",     reinterpret_cast<void*>(1), 1);
     XPLMAppendMenuItem(g_plugin->menuId, "Notepad",        reinterpret_cast<void*>(2), 1);
+    XPLMAppendMenuItem(g_plugin->menuId, "Charts",         reinterpret_cast<void*>(3), 1);
 
     cp::Log("XPluginStart — CoPilots loaded");
     return 1;

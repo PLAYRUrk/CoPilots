@@ -45,6 +45,9 @@ void StatusHud::renderContent()
     ImGui::SameLine();
     if (ImGui::SmallButton(" N ")) { if (onToggleNotepad) onToggleNotepad(); }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Notepad");
+    ImGui::SameLine();
+    if (ImGui::SmallButton(" Ch ")) { if (onToggleCharts) onToggleCharts(); }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Charts (ChartFox)");
 
     ImGui::PopStyleColor(3);
 

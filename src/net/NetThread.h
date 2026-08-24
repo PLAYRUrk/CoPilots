@@ -97,7 +97,13 @@ private:
         TcpFramer     framer;
         UdpEndpoint   udpEp;
         std::string   tcpIp;  // source IP from the TCP connection (for ANNOUNCE matching)
+        uint64_t      lastRecvMs = 0;  // heartbeat timeout tracking
     };
+
+    // A connection with no inbound bytes for this long is treated as dead.
+    // Both sides send HEARTBEAT every ~1 s, so this only fires when the peer's
+    // sim hard-crashed (no TCP FIN) or the network path is gone.
+    static constexpr uint64_t RECV_TIMEOUT_MS = 10000;
 
     bool isServer_ = false;
 };

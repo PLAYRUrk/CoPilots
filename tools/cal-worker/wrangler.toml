@@ -1,0 +1,6 @@
+name = "copilots-cal"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+# The repository token is a secret, never a variable here:
+#   wrangler secret put GITHUB_TOKEN
